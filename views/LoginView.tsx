@@ -8,9 +8,9 @@ const LoginView: React.FC = () => {
     const [password, setPassword] = useState('');
     const [error, setError] = useState('');
 
-    const handleLogin = (e: React.FormEvent) => {
+    const handleLogin = async (e: React.FormEvent) => {
         e.preventDefault();
-        const user = login(username, password);
+        const user = await login(username, password);
         if (user) {
             window.location.reload();
         } else {

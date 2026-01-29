@@ -1,0 +1,35 @@
+server {
+    listen 80;
+    server_name _;
+    root /var/www/html;
+    index index.html index.php;
+
+    # React Front-End
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+
+    # PHP API
+    location /api/ {
+        try_files $uri $uri/ /api/index.php?$query_string;
+    }
+
+    # Serve uploaded data files
+    location /data/ {
+        alias /var/www/html/data/;
+        autoindex off;
+    }
+
+    # Handle PHP execution
+    location ~ \.php$ {
+        include snippets/fastcgi-php.conf;
+        fastcgi_pass unix:/var/run/php/php8.1-fpm.sock; # Adjust version as needed
+        fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
+        include fastcgi_params;
+    }
+
+    # Deny access to sensitive files
+    location ~ /\.ht {
+        deny all;
+    }
+}

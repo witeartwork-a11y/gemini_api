@@ -1,5 +1,10 @@
 <?php
 // API Router for PHP Backend
+
+// Disable output buffering to prevent any unwanted output
+ini_set('display_errors', 0);
+error_reporting(0);
+
 header('Access-Control-Allow-Origin: *');
 header('Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS');
 header('Access-Control-Allow-Headers: Content-Type, Authorization');
@@ -12,7 +17,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
 
 // Define base path for data storage
 define('DATA_DIR', __DIR__ . '/../data');
-define('PORT', 'http://' . $_SERVER['HTTP_HOST']);
+
+// Определяем протокол (HTTP или HTTPS) автоматически
+$protocol = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off' || $_SERVER['SERVER_PORT'] == 443) ? 'https://' : 'http://';
+define('PORT', $protocol . $_SERVER['HTTP_HOST']);
 
 // Ensure data directory exists
 if (!is_dir(DATA_DIR)) {
@@ -207,6 +215,12 @@ function getHistory($userId) {
             $specificLog = $logsDir . '/' . $date . '.json';
             if (file_exists($specificLog)) {
                 $entries = json_decode(file_get_contents($specificLog), true) ?? [];
+                // FIXED: Add imageUrl for filtered date results
+                foreach ($entries as &$entry) {
+                    if (isset($entry['imageRelativePath']) && $entry['imageRelativePath']) {
+                        $entry['imageUrl'] = PORT . '/api/files/' . $userId . '/' . $entry['imageRelativePath'];
+                    }
+                }
                 $historyItems = $entries;
             }
         } else {
