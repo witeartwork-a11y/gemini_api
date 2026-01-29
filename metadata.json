@@ -1,0 +1,5 @@
+{
+  "name": "add_ai csv",
+  "description": "Добавление обработки в csv и тексте батч",
+  "requestFramePermissions": []
+}
