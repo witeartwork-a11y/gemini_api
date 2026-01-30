@@ -4,7 +4,7 @@ const USERS_KEY = 'wite_ai_users';
 const CURRENT_USER_KEY = 'wite_ai_current_user';
 
 // SHA256 hash helper
-const sha256 = async (message: string): Promise<string> => {
+export const sha256 = async (message: string): Promise<string> => {
     const msgBuffer = new TextEncoder().encode(message);
     const hashBuffer = await crypto.subtle.digest('SHA-256', msgBuffer);
     const hashArray = Array.from(new Uint8Array(hashBuffer));

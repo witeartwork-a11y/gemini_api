@@ -10,11 +10,15 @@ interface SelectProps extends React.SelectHTMLAttributes<HTMLSelectElement>, Bas
     options: { value: string; label: string }[];
 }
 
-export const Select: React.FC<SelectProps> = ({ label, options, className = '', ...props }) => (
+export const Select: React.FC<SelectProps> = ({ label, options, className = '', ...props }) => {
+    const selectId = props.id || `select-${Math.random().toString(36).substr(2, 9)}`;
+    return (
     <div className={`mb-5 ${className}`}>
-        {label && <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2 ml-1">{label}</label>}
+        {label && <label htmlFor={selectId} className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2 ml-1">{label}</label>}
         <div className="relative group">
             <select 
+                id={selectId}
+                name={props.name || selectId}
                 className="w-full bg-slate-800/50 backdrop-blur-sm border border-slate-700/50 text-slate-100 rounded-xl px-4 py-3.5 appearance-none focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500 transition-all hover:bg-slate-800/80 cursor-pointer"
                 {...props}
             >
@@ -27,34 +31,44 @@ export const Select: React.FC<SelectProps> = ({ label, options, className = '', 
             </div>
         </div>
     </div>
-);
+    );
+};
 
 interface TextAreaProps extends React.TextareaHTMLAttributes<HTMLTextAreaElement>, BaseProps {}
 
-export const TextArea: React.FC<TextAreaProps> = ({ label, className = '', ...props }) => (
+export const TextArea: React.FC<TextAreaProps> = ({ label, className = '', ...props }) => {
+    const textareaId = props.id || `textarea-${Math.random().toString(36).substr(2, 9)}`;
+    return (
     <div className={`mb-5 ${className}`}>
-        {label && <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2 ml-1">{label}</label>}
+        {label && <label htmlFor={textareaId} className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2 ml-1">{label}</label>}
         <textarea 
+            id={textareaId}
+            name={props.name || textareaId}
             className="w-full bg-slate-800/50 backdrop-blur-sm border border-slate-700/50 text-slate-100 rounded-xl px-4 py-3.5 min-h-[120px] focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500 transition-all hover:bg-slate-800/80 placeholder-slate-600 resize-y"
             {...props}
         />
     </div>
-);
+    );
+};
 
 interface RangeProps extends React.InputHTMLAttributes<HTMLInputElement>, BaseProps {
     minLabel?: string;
     maxLabel?: string;
 }
 
-export const RangeInput: React.FC<RangeProps> = ({ label, minLabel, maxLabel, value, className = '', ...props }) => (
+export const RangeInput: React.FC<RangeProps> = ({ label, minLabel, maxLabel, value, className = '', ...props }) => {
+    const rangeId = props.id || `range-${Math.random().toString(36).substr(2, 9)}`;
+    return (
     <div className={`mb-6 ${className}`}>
         <div className="flex justify-between items-center mb-3">
-             {label && <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider ml-1">{label}</label>}
+             {label && <label htmlFor={rangeId} className="block text-xs font-semibold text-slate-400 uppercase tracking-wider ml-1">{label}</label>}
              <span className="bg-blue-600/20 text-blue-400 px-2 py-0.5 rounded text-xs font-mono font-bold border border-blue-500/30">{value}</span>
         </div>
         
         <input 
             type="range" 
+            id={rangeId}
+            name={props.name || rangeId}
             className="w-full h-2 bg-slate-700 rounded-lg appearance-none cursor-pointer focus:outline-none"
             value={value}
             {...props}
@@ -64,4 +78,5 @@ export const RangeInput: React.FC<RangeProps> = ({ label, minLabel, maxLabel, va
             <span>{maxLabel}</span>
         </div>
     </div>
-);
+    );
+};

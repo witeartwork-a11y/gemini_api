@@ -16,6 +16,7 @@ interface LayoutProps {
 
 const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange }) => {
     const [showSettings, setShowSettings] = useState(false);
+    const [showApps, setShowApps] = useState(false);
     const [apiKey, setApiKey] = useState('');
     const { t, language, setLanguage } = useLanguage();
     const { theme, setTheme, newYearMode, setNewYearMode } = useTheme();
@@ -81,10 +82,10 @@ const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange }) => 
         <div className="min-h-screen pb-12 relative font-sans selection:bg-theme-primary/30">
             {/* Header */}
             <header className="sticky top-0 z-50 px-4 pt-4 pb-2">
-                <div className="max-w-[1920px] mx-auto bg-slate-900/80 backdrop-blur-xl border border-slate-700/60 rounded-2xl shadow-2xl shadow-black/20 relative overflow-hidden">
+                <div className="max-w-[1920px] mx-auto bg-slate-900/80 backdrop-blur-xl border border-slate-700/60 rounded-2xl shadow-2xl shadow-black/20 relative">
                     {/* New Year Decor on Header */}
                     {newYearMode && (
-                        <div className="absolute top-0 w-full h-1 bg-gradient-to-r from-red-500 via-green-500 to-white opacity-50"></div>
+                        <div className="absolute top-0 w-full h-1 bg-gradient-to-r from-red-500 via-green-500 to-white opacity-50 rounded-t-2xl"></div>
                     )}
 
                     <div className="flex flex-col md:flex-row justify-between items-center px-4 py-3 gap-4 relative z-10 min-h-[60px]">
@@ -95,6 +96,37 @@ const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange }) => 
                                 <i className="fas fa-robot text-white text-sm"></i>
                             </div>
                             <span className="font-bold text-white text-lg tracking-tight hidden lg:block">Wite AI</span>
+                            
+                            {/* Apps Button */}
+                            <div className="relative">
+                                <button 
+                                    onClick={() => setShowApps(!showApps)} 
+                                    className={`ml-2 w-8 h-8 rounded-lg flex items-center justify-center transition-all ${showApps ? 'bg-slate-800 text-white' : 'text-slate-400 hover:text-white hover:bg-slate-800/50'}`}
+                                >
+                                    <i className="fas fa-th"></i>
+                                </button>
+                                
+                                {/* Apps Slide-out Panel */}
+                                {showApps && (
+                                    <div className="absolute top-full left-0 mt-4 w-72 bg-slate-900/95 backdrop-blur-xl border border-slate-700/80 rounded-2xl shadow-2xl p-4 z-50 animate-fade-in origin-top-left">
+                                        <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3 px-1">Wite Apps</h3>
+                                        <div className="grid grid-cols-2 gap-2">
+                                            <a href="https://wite-hik.ru/" target="_blank" rel="noreferrer" className="flex flex-col items-center justify-center gap-2 p-3 rounded-xl bg-slate-800/50 hover:bg-slate-800 border border-slate-700/50 hover:border-slate-600 transition-all group">
+                                                <div className="w-10 h-10 rounded-lg bg-gradient-to-br from-pink-500 to-rose-600 flex items-center justify-center shadow-lg group-hover:scale-110 transition-transform">
+                                                    <i className="fas fa-layer-group text-white"></i>
+                                                </div>
+                                                <span className="text-xs font-medium text-slate-300">Mockups</span>
+                                            </a>
+                                            <a href="https://wb.wite-hik.ru/" target="_blank" rel="noreferrer" className="flex flex-col items-center justify-center gap-2 p-3 rounded-xl bg-slate-800/50 hover:bg-slate-800 border border-slate-700/50 hover:border-slate-600 transition-all group">
+                                                <div className="w-10 h-10 rounded-lg bg-gradient-to-br from-emerald-500 to-teal-600 flex items-center justify-center shadow-lg group-hover:scale-110 transition-transform">
+                                                    <i className="fas fa-table text-white"></i>
+                                                </div>
+                                                <span className="text-xs font-medium text-slate-300">Excel</span>
+                                            </a>
+                                        </div>
+                                    </div>
+                                )}
+                            </div>
                         </div>
 
                         {/* 2. Main Navigation Tabs (Center) */}
@@ -182,10 +214,12 @@ const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange }) => 
                         <div className="space-y-6 mb-8">
                             {/* API Key */}
                             <div>
-                                <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2 ml-1">
+                                <label htmlFor="api-key-input" className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2 ml-1">
                                     {t('api_key_label')}
                                 </label>
                                 <input 
+                                    id="api-key-input"
+                                    name="api-key"
                                     type="password" 
                                     className="w-full bg-slate-800/50 border border-slate-700 text-slate-100 rounded-xl px-4 py-3.5 focus:ring-2 focus:ring-theme-primary/50 focus:border-theme-primary outline-none transition-all placeholder-slate-600"
                                     placeholder="Paste your Gemini API Key here..."
@@ -242,7 +276,7 @@ const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange }) => 
 
                             {/* Language Switcher */}
                             <div>
-                                <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2 ml-1">
+                                <label htmlFor="language-select" className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2 ml-1">
                                     {t('language_label')}
                                 </label>
                                 <div className="flex bg-slate-800 rounded-xl p-1 border border-slate-700/50">
@@ -263,9 +297,10 @@ const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange }) => 
                             
                             {/* Theme Selector */}
                             <div>
-                                <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2 ml-1">
+                                <fieldset>
+                                <legend className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2 ml-1">
                                     {t('appearance')}
-                                </label>
+                                </legend>
                                 <div className="grid grid-cols-3 gap-2">
                                     <button 
                                         onClick={() => setTheme('default')}
@@ -286,6 +321,7 @@ const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange }) => 
                                         <i className="fas fa-circle text-[10px] mr-1 text-emerald-300"></i> {t('theme_green')}
                                     </button>
                                 </div>
+                                </fieldset>
                             </div>
 
                             {/* New Year Mode Toggle */}
@@ -296,8 +332,10 @@ const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange }) => 
                                     </div>
                                     <div className="text-xs text-slate-400">{t('new_year_desc')}</div>
                                 </div>
-                                <label className="relative inline-flex items-center cursor-pointer">
+                                <label htmlFor="new-year-toggle" className="relative inline-flex items-center cursor-pointer">
                                     <input 
+                                        id="new-year-toggle"
+                                        name="new-year-mode"
                                         type="checkbox" 
                                         className="sr-only peer"
                                         checked={newYearMode}

@@ -89,6 +89,8 @@ const FileUploader: React.FC<FileUploaderProps> = ({
             <input 
                 type="file" 
                 ref={inputRef}
+                id="file-uploader-input"
+                name="file-uploader"
                 className="hidden" 
                 multiple={multiple}
                 accept={accept}

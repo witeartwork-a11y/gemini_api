@@ -146,8 +146,8 @@ const ImageViewer: React.FC<ImageViewerProps> = ({ src, alt, prompt, onClose, on
                         </h3>
                         
                         <div className="flex-1 overflow-y-auto custom-scrollbar mb-4">
-                            <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">Prompt</label>
-                            <div className="text-sm text-slate-200 whitespace-pre-wrap leading-relaxed bg-slate-800/50 p-3 rounded-lg border border-slate-700/50">
+                            <label htmlFor="prompt-display" className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">Prompt</label>
+                            <div id="prompt-display" className="text-sm text-slate-200 whitespace-pre-wrap leading-relaxed bg-slate-800/50 p-3 rounded-lg border border-slate-700/50">
                                 {prompt}
                             </div>
                         </div>

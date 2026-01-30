@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect } from 'react';
 import Button from '../components/ui/Button';
-import { getUsers, saveUser, deleteUser } from '../services/authService';
+import { getUsers, saveUser, deleteUser, sha256 } from '../services/authService';
 import { User } from '../types';
 import { MODELS } from '../constants';
 import { usePresets, Preset } from '../hooks/usePresets';
@@ -26,19 +26,34 @@ const AdminPanel: React.FC = () => {
 
     // System Settings State
     const [systemSettings, setSystemSettings] = useState<SystemSettings>(getSystemSettings());
+    const [globalApiKey, setGlobalApiKey] = useState<string | null>(null);
 
     useEffect(() => {
         setUsers(getUsers());
         setSystemSettings(getSystemSettings());
+        fetchGlobalApiKey();
     }, []);
 
+    const fetchGlobalApiKey = async () => {
+        try {
+            const res = await fetch('/api/key');
+            const data = await res.json();
+            if (data.apiKey) {
+                setGlobalApiKey(data.apiKey);
+            }
+        } catch (e) {
+            console.error("Failed to fetch API key", e);
+        }
+    };
+
     // --- User Logic ---
-    const handleSaveUser = () => {
+    const handleSaveUser = async () => {
         if (!username || !password) return alert("Username and password required");
+        const passHash = await sha256(password);
         const newUser: User = {
             id: username.toLowerCase().replace(/\s/g, ''),
             username,
-            password,
+            password: passHash,
             role,
             allowedModels: allowedModels.length === 0 ? ['all'] : allowedModels
         };
@@ -313,7 +328,26 @@ const AdminPanel: React.FC = () => {
                          </div>
                     </div>
                 </div>
-            </div>
+                {/* --- 4. Global API Key --- */}
+                <div className="bg-slate-900/60 backdrop-blur-md p-6 rounded-3xl border border-slate-700/50 shadow-xl">
+                    <h2 className="text-xl font-bold text-white mb-4 flex items-center gap-2">
+                        <i className="fas fa-key text-pink-500"></i>
+                        {t('Global Gallery Access')}
+                    </h2>
+                    
+                    <div className="bg-slate-950 p-4 rounded-xl border border-slate-800">
+                        <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">API Key</label>
+                        <div className="flex items-center gap-2">
+                            <code className="flex-1 bg-slate-900 p-3 rounded-lg text-emerald-400 font-mono text-sm break-all select-all border border-slate-800">
+                                {globalApiKey || "Loading..."}
+                            </code>
+                        </div>
+                        <p className="text-xs text-slate-500 mt-3 leading-relaxed">
+                            Use this key to access the global gallery API from external applications:<br/>
+                            <span className="text-slate-400 font-mono">GET /api/external_gallery?key=YOUR_KEY</span>
+                        </p>
+                    </div>
+                </div>            </div>
         </div>
     );
 };

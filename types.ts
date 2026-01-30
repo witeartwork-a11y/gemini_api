@@ -85,6 +85,7 @@ export interface HistoryItem {
     prompt: string;
     image?: string; // base64 (Legacy or small previews)
     imageUrl?: string; // URL to fetch image from server
+    thumbnailUrl?: string;
     resultText?: string;
     aspectRatio?: string;
 }

@@ -557,7 +557,8 @@ const SingleGenerator: React.FC = () => {
                     </h3>
                     <div className="flex gap-4 overflow-x-auto pb-4 custom-scrollbar">
                         {recentHistory.map(item => {
-                            const imgSrc = item.imageUrl || item.image;
+                            const imgSrc = item.thumbnailUrl || item.imageUrl || item.image;
+                            const fullImgSrc = item.imageUrl || item.image;
                             
                             return (
                                 <div key={item.id} className="shrink-0 w-32 group relative">
@@ -568,7 +569,7 @@ const SingleGenerator: React.FC = () => {
                                                 loading="lazy"
                                                 className="w-full h-full object-cover cursor-pointer hover:scale-110 transition-transform duration-500" 
                                                 onClick={() => {
-                                                    setViewingImage(imgSrc);
+                                                    setViewingImage(fullImgSrc); // View FULL image in modal
                                                     setViewingPrompt(item.prompt);
                                                 }}
                                             />
@@ -578,7 +579,7 @@ const SingleGenerator: React.FC = () => {
                                             </div>
                                         )}
                                         <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity flex flex-col items-center justify-center gap-2">
-                                            {imgSrc && (
+                                            {fullImgSrc && (
                                                 <div className="flex gap-2">
                                                     <button 
                                                         onClick={() => handleUseAsInput(item)}
@@ -589,7 +590,7 @@ const SingleGenerator: React.FC = () => {
                                                     </button>
                                                     <button 
                                                         onClick={() => {
-                                                            setViewingImage(imgSrc);
+                                                            setViewingImage(fullImgSrc);
                                                             setViewingPrompt(item.prompt);
                                                         }}
                                                         className="w-8 h-8 rounded-full bg-slate-700 text-white flex items-center justify-center hover:bg-slate-600 transition-colors"
