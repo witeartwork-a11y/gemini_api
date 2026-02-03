@@ -88,6 +88,17 @@ export interface HistoryItem {
     thumbnailUrl?: string;
     resultText?: string;
     aspectRatio?: string;
+    usageMetadata?: {
+        promptTokenCount: number;
+        candidatesTokenCount: number;
+        totalTokenCount: number;
+    };
+    estimatedCost?: number;
+    inputImageInfo?: {
+        count: number;
+        resolutions?: string[];
+    };
+    outputResolution?: string;
 }
 
 export interface ChatMessage {

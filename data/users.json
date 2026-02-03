@@ -1,0 +1,22 @@
+[
+  {
+    "id": "admin",
+    "username": "admin",
+    "password": "616ea71bb9c038037d25a7740b77bfe9b9f740ebaea4b4f735c70b044ad5942a",
+    "role": "admin",
+    "allowedModels": [
+      "all"
+    ]
+  },
+  {
+    "id": "illya",
+    "username": "illya",
+    "password": "c85f3162039066ac732739871470fc4ea374217cda0314129528b82224ae3717",
+    "role": "user",
+    "allowedModels": [
+      "gemini-3-pro-image-preview",
+      "gemini-3-flash-preview",
+      "gemini-2.5-flash-image"
+    ]
+  }
+]

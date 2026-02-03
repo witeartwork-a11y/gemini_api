@@ -81,6 +81,14 @@ elseif ($method === 'GET' && $path === '/api/key') {
 elseif ($method === 'GET' && $path === '/api/external_gallery') {
     handleExternalGallery();
 }
+// Route: GET /api/system-settings
+elseif ($method === 'GET' && $path === '/api/system-settings') {
+    getSystemSettings();
+}
+// Route: POST /api/system-settings
+elseif ($method === 'POST' && $path === '/api/system-settings') {
+    saveSystemSettingsAPI();
+}
 else {
     http_response_code(404);
     echo json_encode(['error' => 'Not found']);
@@ -143,6 +151,10 @@ function saveGeneration() {
         $text = $data['text'] ?? null;
         $aspectRatio = $data['aspectRatio'] ?? 'Auto';
         $timestamp = $data['timestamp'] ?? time();
+        $usageMetadata = $data['usageMetadata'] ?? null;
+        $estimatedCost = $data['estimatedCost'] ?? null;
+        $inputImageInfo = $data['inputImageInfo'] ?? null;
+        $outputResolution = $data['outputResolution'] ?? null;
         
         $dateStr = date('Y-m-d');
         $userDir = DATA_DIR . '/' . $userId;
@@ -216,7 +228,11 @@ function saveGeneration() {
             'imageRelativePath' => $imageFilename ? 'images/' . $dateStr . '/' . $imageFilename : null,
             'thumbnailRelativePath' => $imageFilename ? 'thumbnails/' . $dateStr . '/' . $imageFilename : null,
             'resultText' => $text,
-            'aspectRatio' => $aspectRatio
+            'aspectRatio' => $aspectRatio,
+            'usageMetadata' => $usageMetadata,
+            'estimatedCost' => $estimatedCost,
+            'inputImageInfo' => $inputImageInfo,
+            'outputResolution' => $outputResolution
         ];
         
         $dailyLog = [];
@@ -550,4 +566,46 @@ function handleExternalGallery() {
 
     echo json_encode($allItems);
 }
-?>
+
+function getSystemSettings() {
+    $settingsFile = DATA_DIR . '/system_settings.json';
+    if (file_exists($settingsFile)) {
+        $settings = json_decode(file_get_contents($settingsFile), true);
+        echo json_encode($settings);
+    } else {
+        // Return default settings
+        $defaults = [
+            'showCreativity' => true,
+            'showRepeats' => true,
+            'theme' => 'default',
+            'language' => 'en',
+            'newYearMode' => false,
+            'safetySettings' => [],
+            'mediaResolution' => 'HIGH'
+        ];
+        echo json_encode($defaults);
+    }
+}
+
+function saveSystemSettingsAPI() {
+    $data = getJsonInput();
+    
+    try {
+        $settingsFile = DATA_DIR . '/system_settings.json';
+        
+        // Load existing settings and merge with new data
+        $existingSettings = [];
+        if (file_exists($settingsFile)) {
+            $existingSettings = json_decode(file_get_contents($settingsFile), true) ?? [];
+        }
+        
+        // Merge new data with existing settings
+        $merged = array_merge($existingSettings, $data);
+        
+        file_put_contents($settingsFile, json_encode($merged, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+        echo json_encode(['success' => true]);
+    } catch (Exception $e) {
+        http_response_code(500);
+        echo json_encode(['error' => $e->getMessage()]);
+    }
+}

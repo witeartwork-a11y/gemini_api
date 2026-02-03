@@ -5,7 +5,7 @@ import { getUsers, saveUser, deleteUser, sha256 } from '../services/authService'
 import { User } from '../types';
 import { MODELS } from '../constants';
 import { usePresets, Preset } from '../hooks/usePresets';
-import { getSystemSettings, saveSystemSettings, SystemSettings } from '../services/settingsService';
+import { getSystemSettings, saveSystemSettings, syncSystemSettings, SystemSettings } from '../services/settingsService';
 import { useLanguage } from '../contexts/LanguageContext';
 
 const AdminPanel: React.FC = () => {
@@ -27,12 +27,32 @@ const AdminPanel: React.FC = () => {
     // System Settings State
     const [systemSettings, setSystemSettings] = useState<SystemSettings>(getSystemSettings());
     const [globalApiKey, setGlobalApiKey] = useState<string | null>(null);
+    const [stats, setStats] = useState<any>(null);
+    const [currentPage, setCurrentPage] = useState(1);
+    const itemsPerPage = 7;
 
     useEffect(() => {
-        setUsers(getUsers());
+        loadData();
+    }, []);
+
+    const loadData = async () => {
+        const [loadedUsers, _] = await Promise.all([getUsers(), syncSystemSettings()]);
+        setUsers(loadedUsers);
         setSystemSettings(getSystemSettings());
         fetchGlobalApiKey();
-    }, []);
+        fetchStats();
+    };
+
+    const fetchStats = async () => {
+        try {
+            const res = await fetch('/api/admin/stats');
+            if (res.ok) {
+                setStats(await res.json());
+            }
+        } catch (e) {
+            console.error("Failed to fetch stats", e);
+        }
+    };
 
     const fetchGlobalApiKey = async () => {
         try {
@@ -49,7 +69,17 @@ const AdminPanel: React.FC = () => {
     // --- User Logic ---
     const handleSaveUser = async () => {
         if (!username || !password) return alert("Username and password required");
-        const passHash = await sha256(password);
+        
+        // Check if user already exists
+        const existingUser = users.find(u => u.id === username.toLowerCase().replace(/\s/g, ''));
+        
+        // Only hash if it's a new password (not already a hash)
+        // SHA256 hashes are always 64 characters long
+        let passHash = password;
+        if (password.length !== 64 || !/^[a-f0-9]+$/.test(password)) {
+            passHash = await sha256(password);
+        }
+        
         const newUser: User = {
             id: username.toLowerCase().replace(/\s/g, ''),
             username,
@@ -57,16 +87,18 @@ const AdminPanel: React.FC = () => {
             role,
             allowedModels: allowedModels.length === 0 ? ['all'] : allowedModels
         };
-        saveUser(newUser);
-        setUsers(getUsers());
+        await saveUser(newUser);
+        const updatedUsers = await getUsers();
+        setUsers(updatedUsers);
         resetUserForm();
     };
 
-    const handleDeleteUser = (id: string) => {
+    const handleDeleteUser = async (id: string) => {
         if (confirm("Delete user?")) {
             try {
-                deleteUser(id);
-                setUsers(getUsers());
+                await deleteUser(id);
+                const updatedUsers = await getUsers();
+                setUsers(updatedUsers);
             } catch (e: any) {
                 alert(e.message);
             }
@@ -244,7 +276,7 @@ const AdminPanel: React.FC = () => {
                                                 type="checkbox" 
                                                 checked={allowedModels.includes(m.value)}
                                                 onChange={() => toggleModel(m.value)}
-                                                disabled={allowedModels.length === 0} 
+                                                disabled={allowedModels.includes('all')} 
                                             />
                                             <span className="text-sm text-slate-300">{m.label}</span>
                                         </label>
@@ -328,26 +360,110 @@ const AdminPanel: React.FC = () => {
                          </div>
                     </div>
                 </div>
-                {/* --- 4. Global API Key --- */}
-                <div className="bg-slate-900/60 backdrop-blur-md p-6 rounded-3xl border border-slate-700/50 shadow-xl">
-                    <h2 className="text-xl font-bold text-white mb-4 flex items-center gap-2">
-                        <i className="fas fa-key text-pink-500"></i>
-                        {t('Global Gallery Access')}
+            </div>
+
+            {/* --- 4. Global API Key --- */}
+            <div className="bg-slate-800/50 backdrop-blur-sm p-6 rounded-2xl border border-slate-700">
+                <h2 className="text-xl font-bold text-white mb-6 flex items-center gap-2">
+                    <i className="fas fa-key text-pink-500"></i>
+                    {t('global_gallery_access')}
+                </h2>
+                
+                <div className="bg-slate-900/50 p-4 rounded-xl border border-slate-700">
+                    <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">{t('api_key_short')}</label>
+                    <div className="flex items-center gap-2">
+                        <code className="flex-1 bg-slate-950 p-3 rounded-lg text-emerald-400 font-mono text-sm break-all select-all border border-slate-800">
+                            {globalApiKey || "Loading..."}
+                        </code>
+                    </div>
+                    <p className="text-xs text-slate-500 mt-3 leading-relaxed">
+                        {t('api_key_desc')}<br/>
+                        <span className="text-slate-400 font-mono">GET /api/external_gallery?key=YOUR_KEY</span>
+                    </p>
+                </div>
+            </div>
+
+             {/* Usage Statistics Classification */}
+             {stats && (
+                <div className="bg-slate-800/50 backdrop-blur-sm p-6 rounded-2xl border border-slate-700">
+                    <h2 className="text-xl font-bold text-white mb-6 flex items-center gap-2">
+                        <i className="fas fa-chart-line text-amber-500"></i>
+                        {t('usage_stats')}
                     </h2>
                     
-                    <div className="bg-slate-950 p-4 rounded-xl border border-slate-800">
-                        <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">API Key</label>
-                        <div className="flex items-center gap-2">
-                            <code className="flex-1 bg-slate-900 p-3 rounded-lg text-emerald-400 font-mono text-sm break-all select-all border border-slate-800">
-                                {globalApiKey || "Loading..."}
-                            </code>
+                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                        <div>
+                             <h3 className="text-md font-bold text-slate-300 mb-3">{t('usage_by_user')}</h3>
+                             <div className="bg-slate-900/50 rounded-xl border border-slate-700 overflow-hidden">
+                                 <table className="w-full text-sm text-left text-slate-400">
+                                     <thead className="text-xs text-slate-200 uppercase bg-slate-800">
+                                         <tr>
+                                             <th className="px-4 py-3">User</th>
+                                             <th className="px-4 py-3">{t('count')}</th>
+                                             <th className="px-4 py-3">{t('tokens')}</th>
+                                             <th className="px-4 py-3">{t('cost')}</th>
+                                         </tr>
+                                     </thead>
+                                     <tbody>
+                                        {Object.entries(stats.users || {}).map(([uid, s]: [string, any]) => (
+                                            <tr key={uid} className="border-b border-slate-800 hover:bg-slate-800/30">
+                                                <td className="px-4 py-3 font-medium text-white">{uid}</td>
+                                                <td className="px-4 py-3">{s.count}</td>
+                                                <td className="px-4 py-3">{(s.totalTokens / 1000).toFixed(1)}k</td>
+                                                <td className="px-4 py-3">${s.totalCost.toFixed(4)}</td>
+                                            </tr>
+                                        ))}
+                                     </tbody>
+                                 </table>
+                             </div>
                         </div>
-                        <p className="text-xs text-slate-500 mt-3 leading-relaxed">
-                            Use this key to access the global gallery API from external applications:<br/>
-                            <span className="text-slate-400 font-mono">GET /api/external_gallery?key=YOUR_KEY</span>
-                        </p>
+                        
+                        <div>
+                             <h3 className="text-md font-bold text-slate-300 mb-3">{t('daily_activity')}</h3>
+                             <div className="space-y-2 mb-4">
+                                 {Object.entries(stats.timeline || {})
+                                     .sort((a,b) => b[0].localeCompare(a[0]))
+                                     .slice((currentPage - 1) * itemsPerPage, currentPage * itemsPerPage)
+                                     .map(([date, s]: [string, any]) => (
+                                     <div key={date} className="bg-slate-900/50 p-3 rounded-lg border border-slate-700 flex justify-between items-center">
+                                         <div className="font-mono text-emerald-400">{date}</div>
+                                         <div className="flex gap-4 text-xs">
+                                             <span className="text-slate-400">{s.count} {t('gens')}</span>
+                                             <span className="text-blue-400">{(s.tokens/1000).toFixed(1)}k {t('tok')}</span>
+                                             <span className="text-amber-400 font-bold">${s.cost.toFixed(4)}</span>
+                                         </div>
+                                     </div>
+                                 ))}
+                             </div>
+                             
+                             {/* Pagination Controls */}
+                             {Object.keys(stats.timeline || {}).length > itemsPerPage && (
+                                <div className="flex justify-between items-center bg-slate-900/50 p-2 rounded-lg border border-slate-700">
+                                    <Button 
+                                        variant="secondary" 
+                                        className="text-xs py-1 h-auto"
+                                        disabled={currentPage === 1}
+                                        onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                                    >
+                                        <i className="fas fa-chevron-left mr-1"></i> Prev
+                                    </Button>
+                                    <span className="text-xs text-slate-400 font-mono">
+                                        Page {currentPage} / {Math.ceil(Object.keys(stats.timeline || {}).length / itemsPerPage)}
+                                    </span>
+                                    <Button 
+                                        variant="secondary" 
+                                        className="text-xs py-1 h-auto"
+                                        disabled={currentPage >= Math.ceil(Object.keys(stats.timeline || {}).length / itemsPerPage)}
+                                        onClick={() => setCurrentPage(p => p + 1)}
+                                    >
+                                        Next <i className="fas fa-chevron-right ml-1"></i>
+                                    </Button>
+                                </div>
+                             )}
+                        </div>
                     </div>
-                </div>            </div>
+                </div>
+            )}
         </div>
     );
 };

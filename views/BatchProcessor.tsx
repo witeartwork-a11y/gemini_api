@@ -7,7 +7,7 @@ import ImageViewer from '../components/ui/ImageViewer';
 import CompareViewer from '../components/ui/CompareViewer';
 import { generateContent, downloadBase64Image, fileToText } from '../services/geminiService';
 import { ProcessingConfig, ModelType, BatchFile, BatchTextGroup } from '../types';
-import { MODELS, RESOLUTIONS, ASPECT_RATIOS } from '../constants';
+import { MODELS, RESOLUTIONS, ASPECT_RATIOS, MODEL_PRICING } from '../constants';
 import { useLanguage } from '../contexts/LanguageContext';
 import { usePresets } from '../hooks/usePresets';
 import { saveGeneration } from '../services/historyService';
@@ -19,6 +19,21 @@ type BatchMode = 'image' | 'text';
 
 const BatchProcessor: React.FC = () => {
     const { t } = useLanguage();
+    
+    const translatedAspectRatios = [
+        { value: 'Auto', label: t('ar_auto') },
+        { value: '1:1', label: t('ar_square') },
+        { value: '9:16', label: t('ar_portrait_mobile') },
+        { value: '16:9', label: t('ar_landscape') },
+        { value: '3:4', label: t('ar_portrait_standard') },
+        { value: '4:3', label: t('ar_landscape_standard') },
+        { value: '3:2', label: t('ar_classic_photo') },
+        { value: '2:3', label: t('ar_portrait_photo') },
+        { value: '5:4', label: t('ar_print') },
+        { value: '4:5', label: t('ar_instagram') },
+        { value: '21:9', label: t('ar_cinematic') },
+    ];
+
     const { presets } = usePresets();
     const user = getCurrentUser();
     
@@ -122,7 +137,32 @@ const BatchProcessor: React.FC = () => {
                     const result = await generateContent(config, batchFile.file ? [batchFile.file] : []);
                     
                     if (user && result.image) {
-                        await saveGeneration(user.id, 'batch', config.model, config.userPrompt, result.image, result.text);
+                        let cost = 0;
+                        // @ts-ignore
+                        if (result.usageMetadata && MODEL_PRICING[config.model]) {
+                             // @ts-ignore
+                             const p = MODEL_PRICING[config.model];
+                             // @ts-ignore
+                             cost = (result.usageMetadata.promptTokenCount * p.input) + (result.usageMetadata.candidatesTokenCount * p.output);
+                        }
+                        if (result.image && MODEL_PRICING[config.model]?.perImage) {
+                            cost += MODEL_PRICING[config.model]!.perImage!;
+                        }
+
+                        await saveGeneration(
+                            user.id, 
+                            'batch', 
+                            config.model, 
+                            config.userPrompt, 
+                            result.image, 
+                            result.text,
+                            config.aspectRatio,
+                            // @ts-ignore
+                            result.usageMetadata,
+                            cost,
+                            { count: 1 },
+                            config.resolution
+                        );
                     }
 
                     setFiles(prev => prev.map(f => f.id === batchFile.id ? { 
@@ -178,7 +218,27 @@ const BatchProcessor: React.FC = () => {
                         const result = await generateContent(config, [], textFilesData);
 
                         if (user) {
-                            await saveGeneration(user.id, 'batch', config.model, config.userPrompt, undefined, result.text);
+                            let cost = 0;
+                            // @ts-ignore
+                            if (result.usageMetadata && MODEL_PRICING[config.model]) {
+                                // @ts-ignore
+                                const p = MODEL_PRICING[config.model];
+                                // @ts-ignore
+                                cost = (result.usageMetadata.promptTokenCount * p.input) + (result.usageMetadata.candidatesTokenCount * p.output);
+                            }
+
+                            await saveGeneration(
+                                user.id, 
+                                'batch', 
+                                config.model, 
+                                config.userPrompt, 
+                                undefined, 
+                                result.text,
+                                config.aspectRatio,
+                                // @ts-ignore
+                                result.usageMetadata,
+                                cost
+                            );
                         }
 
                         // Complete
@@ -208,7 +268,20 @@ const BatchProcessor: React.FC = () => {
                             textFilesData.push({ name: file.name, content });
                         }
                         const result = await generateContent(config, [], textFilesData);
-                        if (user) await saveGeneration(user.id, 'batch', config.model, config.userPrompt, undefined, result.text);
+                        if (user) {
+                             let cost = 0;
+                            // @ts-ignore
+                            if (result.usageMetadata && MODEL_PRICING[config.model]) {
+                                // @ts-ignore
+                                const p = MODEL_PRICING[config.model];
+                                // @ts-ignore
+                                cost = (result.usageMetadata.promptTokenCount * p.input) + (result.usageMetadata.candidatesTokenCount * p.output);
+                            }
+                            await saveGeneration(user.id, 'batch', config.model, config.userPrompt, undefined, result.text, config.aspectRatio, 
+                                // @ts-ignore
+                                result.usageMetadata, cost
+                            );
+                        }
                         setTextGroups(prev => prev.map(g => g.id === group.id ? { ...g, status: 'completed', resultText: result.text } : g));
                     } catch (error: any) {
                         setTextGroups(prev => prev.map(g => g.id === group.id ? { ...g, status: 'failed', error: error.message } : g));
@@ -294,6 +367,8 @@ const BatchProcessor: React.FC = () => {
         const preset = presets.find(p => p.name === e.target.value);
         if (preset) {
             setConfig(prev => ({ ...prev, systemPrompt: preset.content }));
+        } else {
+            setConfig(prev => ({ ...prev, systemPrompt: '' }));
         }
     };
 
@@ -339,13 +414,13 @@ const BatchProcessor: React.FC = () => {
                             onClick={() => setMode('image')}
                             className={`px-4 py-2 rounded-md text-sm font-bold transition-all flex items-center gap-2 ${mode === 'image' ? 'bg-theme-primary text-white shadow-lg' : 'text-slate-400 hover:text-white'}`}
                         >
-                            <i className="fas fa-image"></i> Images
+                            <i className="fas fa-image"></i> {t('mode_images')}
                         </button>
                         <button 
                             onClick={() => setMode('text')}
                             className={`px-4 py-2 rounded-md text-sm font-bold transition-all flex items-center gap-2 ${mode === 'text' ? 'bg-theme-primary text-white shadow-lg' : 'text-slate-400 hover:text-white'}`}
                         >
-                            <i className="fas fa-file-alt"></i> Text / CSV
+                            <i className="fas fa-file-alt"></i> {t('mode_text_csv')}
                         </button>
                      </div>
                 </div>
@@ -369,7 +444,7 @@ const BatchProcessor: React.FC = () => {
                                 />
                                 <Select 
                                     label={t('ar_label')}
-                                    options={ASPECT_RATIOS} 
+                                    options={translatedAspectRatios} 
                                     value={config.aspectRatio}
                                     onChange={e => setConfig({ ...config, aspectRatio: e.target.value })}
                                 />
@@ -399,7 +474,7 @@ const BatchProcessor: React.FC = () => {
                                     onChange={handlePresetChange}
                                     defaultValue=""
                                 >
-                                    <option value="" disabled>{t('load_preset_placeholder')}</option>
+                                    <option value="">{t('load_preset_placeholder')}</option>
                                     {presets.map(p => (
                                         <option key={p.name} value={p.name}>{p.name}</option>
                                     ))}
@@ -424,7 +499,7 @@ const BatchProcessor: React.FC = () => {
                             onChange={e => setConfig({ ...config, userPrompt: e.target.value })}
                             className="flex-1"
                             rows={4}
-                            placeholder={mode === 'text' ? "Analyze the attached files..." : "Describe image generation..."}
+                            placeholder={mode === 'text' ? t('analyze_files_placeholder') : t('image_gen_placeholder')}
                         />
                     </div>
                 </div>
@@ -543,7 +618,7 @@ const BatchProcessor: React.FC = () => {
                             {t('clear_completed')}
                         </Button>
                         <Button variant="primary" onClick={handleDownloadAll} disabled={completedList.length === 0} className="text-xs px-4 py-2 h-auto" icon="fa-file-zipper">
-                            Download All
+                            {t('download_all_btn')}
                         </Button>
                     </div>
                 </div>
@@ -620,7 +695,7 @@ const BatchProcessor: React.FC = () => {
                 {completedList.length === 0 && (
                     <div className="text-center py-16 text-slate-500 bg-slate-800/20 rounded-2xl border-2 border-dashed border-slate-700/50">
                         <i className="fas fa-box-open text-4xl mb-4 opacity-30"></i>
-                        <p className="font-medium">Processed results will appear here</p>
+                        <p className="font-medium">{t('processed_result_msg')}</p>
                     </div>
                 )}
             </div>

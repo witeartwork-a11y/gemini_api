@@ -11,7 +11,18 @@ export const saveGeneration = async (
     prompt: string,
     image?: string,
     text?: string,
-    aspectRatio?: string
+    aspectRatio?: string,
+    usageMetadata?: {
+        promptTokenCount: number;
+        candidatesTokenCount: number;
+        totalTokenCount: number;
+    },
+    estimatedCost?: number,
+    inputImageInfo?: {
+        count: number;
+        resolutions?: string[];
+    },
+    outputResolution?: string
 ): Promise<void> => {
     try {
         const payload = {
@@ -22,7 +33,11 @@ export const saveGeneration = async (
             image,
             text,
             aspectRatio,
-            timestamp: Date.now()
+            timestamp: Date.now(),
+            usageMetadata,
+            estimatedCost,
+            inputImageInfo,
+            outputResolution
         };
 
         const response = await fetch(`${API_URL}/save`, {

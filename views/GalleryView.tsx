@@ -101,8 +101,9 @@ const GalleryView: React.FC = () => {
             {viewingItem && (viewingItem.imageUrl || viewingItem.image) && (
                 <ImageViewer 
                     src={viewingItem.imageUrl || viewingItem.image!} 
-                    prompt={viewingItem.prompt}
-                    onClose={() => setViewingItem(null)} 
+                    prompt={viewingItem.prompt}                    date={viewingItem.timestamp}
+                    resolution={viewingItem.outputResolution}
+                    inputImagesCount={viewingItem.inputImageInfo?.count}                    onClose={() => setViewingItem(null)} 
                     onDownload={() => handleDownload(viewingItem)}
                 />
             )}

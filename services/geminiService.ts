@@ -40,11 +40,17 @@ export const fileToText = (file: File): Promise<string> => {
 export const generateContent = async (
     config: ProcessingConfig,
     imageFiles: File[],
-    textFilesData?: { name: string, content: string }[]
+    textFilesData?: { name: string, content: string }[],
+    signal?: AbortSignal
 ) => {
     try {
         const apiKey = getApiKey();
         const ai = new GoogleGenAI({ apiKey });
+        
+        // ... (check abort)
+        if (signal?.aborted) {
+            throw new Error("Aborted");
+        }
         
         const parts: any[] = [];
         const isProImageModel = config.model === ModelType.GEMINI_3_PRO_IMAGE;
@@ -98,7 +104,10 @@ export const generateContent = async (
             }
             
             if (isProImageModel) {
-                generateConfig.tools = [{ googleSearch: {} }];
+                 // Try enabling image modalities for Pro model too
+                 generateConfig.responseModalities = ['TEXT', 'IMAGE'];
+                 // Some versions might need explicit imagen tool or just the modality
+                 // generateConfig.tools = [{ googleSearch: {} }]; 
             } else {
                  // ONLY set this for Image models, not generic text models
                  generateConfig.responseModalities = ['TEXT', 'IMAGE'];
@@ -115,11 +124,18 @@ export const generateContent = async (
             }
         }
 
+        if (signal?.aborted) throw new Error("Aborted");
+
         const response = await ai.models.generateContent({
             model: config.model,
             contents: [{ parts: parts }], 
             config: generateConfig
+        }, { 
+            // @ts-ignore - SDK might support signal in RequestOptions
+            signal 
         });
+
+        const usageMetadata = (response as any).usageMetadata;
 
         let resultImage: string | undefined;
         let resultText: string | undefined;
@@ -136,7 +152,12 @@ export const generateContent = async (
 
         return {
             image: resultImage,
-            text: resultText
+            text: resultText,
+            usageMetadata: usageMetadata ? {
+                promptTokenCount: usageMetadata.promptTokenCount,
+                candidatesTokenCount: usageMetadata.candidatesTokenCount,
+                totalTokenCount: usageMetadata.totalTokenCount
+            } : undefined
         };
 
     } catch (error: any) {

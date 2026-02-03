@@ -20,41 +20,87 @@ const getDefaultAdmin = (): User => ({
     allowedModels: ['all']
 });
 
-export const initializeUsers = () => {
-    const stored = localStorage.getItem(USERS_KEY);
-    if (!stored) {
-        localStorage.setItem(USERS_KEY, JSON.stringify([getDefaultAdmin()]));
+export const initializeUsers = async () => {
+    try {
+        const res = await fetch('/api/users');
+        if (res.ok) {
+            const users = await res.json();
+            if (users.length === 0) {
+                 // Initialize default admin on server if empty
+                 const defaultAdmin = getDefaultAdmin();
+                 await saveUser(defaultAdmin);
+            } else {
+                 localStorage.setItem(USERS_KEY, JSON.stringify(users));
+            }
+        }
+    } catch (e) {
+        console.error("Failed to init users from server", e);
     }
 };
 
-export const getUsers = (): User[] => {
-    initializeUsers();
+export const getUsers = async (): Promise<User[]> => {
+    try {
+        const res = await fetch('/api/users');
+        if (res.ok) {
+            const users = await res.json();
+            localStorage.setItem(USERS_KEY, JSON.stringify(users)); // Sync cache
+            return users;
+        }
+    } catch (e) {}
     return JSON.parse(localStorage.getItem(USERS_KEY) || '[]');
 };
 
-export const saveUser = (user: User) => {
-    const users = getUsers();
-    const existing = users.findIndex(u => u.id === user.id);
-    if (existing >= 0) {
-        users[existing] = user;
+export const saveUser = async (user: User) => {
+    const users = await getUsers();
+    const existingIndex = users.findIndex(u => u.id === user.id);
+    
+    if (existingIndex >= 0) {
+        users[existingIndex] = user;
     } else {
         users.push(user);
     }
+    
+    // Optimistic update
     localStorage.setItem(USERS_KEY, JSON.stringify(users));
+    
+    await fetch('/api/users', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(users)
+    });
 };
 
-export const deleteUser = (id: string) => {
+export const deleteUser = async (id: string) => {
     if (id === 'admin') throw new Error("Cannot delete root admin");
-    const users = getUsers().filter(u => u.id !== id);
+    const users = (await getUsers()).filter(u => u.id !== id);
+    
     localStorage.setItem(USERS_KEY, JSON.stringify(users));
+    
+    await fetch('/api/users', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(users)
+    });
 };
 
 export const login = async (username: string, password: string): Promise<User | null> => {
-    const users = getUsers();
+    // Ensure users are initialized
+    await initializeUsers();
+    
+    let users = await getUsers();
+    
+    // If no users exist, create default admin
+    if (users.length === 0) {
+        const defaultAdmin = getDefaultAdmin();
+        await saveUser(defaultAdmin);
+        users = [defaultAdmin];
+    }
+    
     const passwordHash = await sha256(password);
-    const user = users.find(u => u.username === username && u.password === passwordHash);
+    // Case-insensitive username comparison
+    const user = users.find(u => u.username.toLowerCase() === username.toLowerCase() && u.password === passwordHash);
     if (user) {
-        // Store session (exclude password from session storage)
+        // Store session 
         const sessionUser = { ...user };
         delete sessionUser.password;
         localStorage.setItem(CURRENT_USER_KEY, JSON.stringify(sessionUser));

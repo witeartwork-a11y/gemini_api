@@ -1,5 +1,6 @@
 
 import React, { useRef, useState } from 'react';
+import { useLanguage } from '../../contexts/LanguageContext';
 
 interface FileUploaderProps {
     onFilesSelected: (files: File[]) => void;
@@ -16,6 +17,7 @@ const FileUploader: React.FC<FileUploaderProps> = ({
     accept = "image/*",
     label
 }) => {
+    const { t } = useLanguage();
     const inputRef = useRef<HTMLInputElement>(null);
     const [isDragging, setIsDragging] = useState(false);
 
@@ -106,10 +108,10 @@ const FileUploader: React.FC<FileUploaderProps> = ({
                 </div>
                 <div className="w-full px-2">
                     <p className="text-sm font-semibold text-slate-200 break-words whitespace-normal w-full leading-tight">
-                        {isDragging ? 'Drop it!' : (label || 'Drag & drop files')}
+                        {isDragging ? t('drop_it') : (label || t('drag_drop_files'))}
                     </p>
                     <p className="text-xs text-slate-500 mt-1 break-words whitespace-normal w-full">
-                        or click to browse {multiple ? 'multiple' : ''}
+                        {multiple ? t('or_click_browse_multi') : t('or_click_browse')}
                     </p>
                 </div>
             </div>

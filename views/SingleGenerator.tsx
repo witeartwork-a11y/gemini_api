@@ -8,7 +8,7 @@ import { generateContent, downloadBase64Image, fileToBase64 } from '../services/
 import { saveGeneration, getUserHistory, deleteGeneration } from '../services/historyService';
 import { getCurrentUser } from '../services/authService';
 import { ProcessingConfig, ModelType, HistoryItem } from '../types';
-import { MODELS, ASPECT_RATIOS, RESOLUTIONS } from '../constants';
+import { MODELS, ASPECT_RATIOS, RESOLUTIONS, MODEL_PRICING } from '../constants';
 import { useLanguage } from '../contexts/LanguageContext';
 import { usePresets } from '../hooks/usePresets';
 import { getSystemSettings, SystemSettings } from '../services/settingsService';
@@ -21,6 +21,21 @@ interface ImageAsset {
 
 const SingleGenerator: React.FC = () => {
     const { t } = useLanguage();
+
+    const translatedAspectRatios = [
+        { value: 'Auto', label: t('ar_auto') },
+        { value: '1:1', label: t('ar_square') },
+        { value: '9:16', label: t('ar_portrait_mobile') },
+        { value: '16:9', label: t('ar_landscape') },
+        { value: '3:4', label: t('ar_portrait_standard') },
+        { value: '4:3', label: t('ar_landscape_standard') },
+        { value: '3:2', label: t('ar_classic_photo') },
+        { value: '2:3', label: t('ar_portrait_photo') },
+        { value: '5:4', label: t('ar_print') },
+        { value: '4:5', label: t('ar_instagram') },
+        { value: '21:9', label: t('ar_cinematic') },
+    ];
+
     const { presets, savePreset, deletePreset } = usePresets();
     const user = getCurrentUser();
     
@@ -41,12 +56,13 @@ const SingleGenerator: React.FC = () => {
     
     const [isProcessing, setIsProcessing] = useState(false);
     const [currentRunIndex, setCurrentRunIndex] = useState(0);
-    const [result, setResult] = useState<{ image?: string, text?: string } | null>(null);
+    const [result, setResult] = useState<{ image?: string, text?: string, usageMetadata?: any } | null>(null);
     const [error, setError] = useState<string | null>(null);
     const [selectedPresetName, setSelectedPresetName] = useState<string>("");
     const [isDraggingOverGallery, setIsDraggingOverGallery] = useState(false);
     const [viewingImage, setViewingImage] = useState<string | null>(null);
     const [viewingPrompt, setViewingPrompt] = useState<string | undefined>(undefined);
+    const [viewingMeta, setViewingMeta] = useState<{date?: number, resolution?: string, inputCount?: number} | null>(null);
     
     // Timer State
     const [elapsedTime, setElapsedTime] = useState<number>(0);
@@ -55,7 +71,7 @@ const SingleGenerator: React.FC = () => {
     // Recent History State
     const [recentHistory, setRecentHistory] = useState<HistoryItem[]>([]);
 
-    const stopRef = useRef(false);
+    const abortControllerRef = useRef<AbortController | null>(null);
 
     // Filter for Image Models or Multimodal Models that handle vision/image tasks
     const availableModels = MODELS.filter(m => m.value.includes('image') || m.value === ModelType.GEMINI_3_FLASH);
@@ -172,51 +188,110 @@ const SingleGenerator: React.FC = () => {
         setIsProcessing(true);
         setError(null);
         setLastGenerationTime(null);
-        stopRef.current = false;
         setCurrentRunIndex(1);
+        
+        // Create new AbortController
+        if (abortControllerRef.current) {
+            abortControllerRef.current.abort();
+        }
+        const ac = new AbortController();
+        abortControllerRef.current = ac;
 
         try {
             const imageFiles = images.map(img => img.file);
             for (let i = 0; i < repeatCount; i++) {
-                if (stopRef.current) break;
+                if (ac.signal.aborted) break;
                 setCurrentRunIndex(i + 1);
                 
                 // Reset timer for each repeat if needed, currently measuring total batch sequence
-                const res = await generateContent(config, imageFiles);
-                
-                if (stopRef.current) break;
+                try {
+                    const res = await generateContent(config, imageFiles, undefined, ac.signal);
+                    
+                    if (ac.signal.aborted) break;
 
-                setResult(res);
+                    setResult(res);
+                    // Force UI update to show image immediately, even if saving takes time
+                    if (repeatCount === 1) {
+                         // Optional: we can setIsProcessing(false) here if we want immediate feedback
+                         // But sticky "processing" is safer for multi-batches.
+                         // Let's just rely on the UI rendering logic which should show result IF result exists.
+                    }
 
-                // Save
-                if (res.image || res.text) {
-                     if (user) {
-                         await saveGeneration(
-                             user.id,
-                             'single',
-                             config.model,
-                             config.userPrompt || `${images.length} images`,
-                             res.image,
-                             res.text,
-                             config.aspectRatio
-                         );
-                         loadRecentHistory(); // Refresh strip
-                     }
+                    // Calculate Cost
+                    let cost = 0;
+                    if (res.usageMetadata) {
+                        const prices = MODEL_PRICING[config.model];
+                        if (prices) {
+                            cost = (res.usageMetadata.promptTokenCount * prices.input) + 
+                                    (res.usageMetadata.candidatesTokenCount * prices.output);
+                        }
+                    }
+                    if (res.image && MODEL_PRICING[config.model]?.perImage) {
+                        cost += MODEL_PRICING[config.model]!.perImage!;
+                    }
+
+                    const inputInfo = { 
+                        count: imageFiles.length,
+                        resolutions: [] 
+                    };
+
+                    // Save - Wrapped in race to prevent infinite hanging
+                    if (res.image || res.text) {
+                        if (user) {
+                             // Race save generation against a 10s timeout so we don't hang effectively forever if server is stubborn
+                             const savePromise = saveGeneration(
+                                 user.id,
+                                 'single',
+                                 config.model,
+                                 config.userPrompt || `${images.length} images`,
+                                 res.image,
+                                 res.text,
+                                 config.aspectRatio,
+                                 res.usageMetadata,
+                                 cost,
+                                 inputInfo,
+                                 config.resolution
+                             );
+                             
+                             const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error("Save timeout")), 10000));
+
+                             try {
+                                 await Promise.race([savePromise, timeoutPromise]);
+                             } catch (e) {
+                                 console.warn("Saving timed out or failed, but continuing:", e);
+                             }
+                             
+                             loadRecentHistory(); // Refresh strip
+                        }
+                    }
+                } catch (innerErr: any) {
+                    if (ac.signal.aborted || innerErr.message === 'Aborted') {
+                        break;
+                    }
+                    throw innerErr;
                 }
             }
         } catch (err: any) {
-            if (!stopRef.current) {
+            if (err.message !== 'Aborted' && !ac.signal.aborted) {
                 setError(err.message);
             }
         } finally {
-            setIsProcessing(false);
-            setLastGenerationTime(elapsedTime);
-            setCurrentRunIndex(0);
+            // Only turn off if we are the current runner (handling race conditions slightly better)
+            if (abortControllerRef.current === ac) {
+                setIsProcessing(false);
+                setLastGenerationTime(elapsedTime);
+                setCurrentRunIndex(0);
+                abortControllerRef.current = null;
+            }
         }
     };
 
     const handleStop = () => {
-        stopRef.current = true;
+        if (abortControllerRef.current) {
+            abortControllerRef.current.abort();
+            abortControllerRef.current = null;
+            setIsProcessing(false); // Force state update immedately
+        }
     };
 
     const handlePresetChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
@@ -247,7 +322,10 @@ const SingleGenerator: React.FC = () => {
                 <ImageViewer 
                     src={viewingImage} 
                     prompt={viewingPrompt}
-                    onClose={() => { setViewingImage(null); setViewingPrompt(undefined); }} 
+                    date={viewingMeta?.date}
+                    resolution={viewingMeta?.resolution}
+                    inputImagesCount={viewingMeta?.inputCount}
+                    onClose={() => { setViewingImage(null); setViewingPrompt(undefined); setViewingMeta(null); }} 
                     onDownload={() => viewingImage && downloadBase64Image(viewingImage, `image-${Date.now()}.png`)}
                 />
             )}
@@ -319,7 +397,7 @@ const SingleGenerator: React.FC = () => {
                                 value={config.systemPrompt}
                                 onChange={e => setConfig({ ...config, systemPrompt: e.target.value })}
                                 rows={3}
-                                placeholder="Define how the model should behave..."
+                                placeholder={t('system_instruction_placeholder')}
                             />
 
                             <TextArea 
@@ -327,7 +405,7 @@ const SingleGenerator: React.FC = () => {
                                 value={config.userPrompt}
                                 onChange={e => setConfig({ ...config, userPrompt: e.target.value })}
                                 rows={8}
-                                placeholder="Describe what you want to generate..."
+                                placeholder={t('prompt_placeholder')}
                             />
 
                             <div className="grid grid-cols-2 gap-5">
@@ -339,7 +417,7 @@ const SingleGenerator: React.FC = () => {
                                 />
                                 <Select 
                                     label={t('ar_label')}
-                                    options={ASPECT_RATIOS} 
+                                    options={translatedAspectRatios} 
                                     value={config.aspectRatio}
                                     onChange={e => setConfig({ ...config, aspectRatio: e.target.value })}
                                 />
@@ -495,12 +573,12 @@ const SingleGenerator: React.FC = () => {
                                 <div className="w-20 h-20 bg-slate-800 rounded-full flex items-center justify-center mb-4 shadow-inner">
                                     <i className="fas fa-magic text-3xl opacity-30 text-slate-400"></i>
                                 </div>
-                                <p className="font-medium text-lg">Ready to Create</p>
-                                <p className="text-sm opacity-60">Configure your settings and press Generate</p>
+                                <p className="font-medium text-lg">{t('ready_to_create')}</p>
+                                <p className="text-sm opacity-60">{t('ready_to_create_desc')}</p>
                             </div>
                         )}
 
-                        {isProcessing && (
+                        {isProcessing && !result && (
                              <div className="flex-1 flex flex-col items-center justify-center text-theme-primary">
                                 <div className="relative mb-6">
                                     <div className="w-16 h-16 border-4 border-theme-primary/30 border-t-theme-primary rounded-full animate-spin"></div>
@@ -517,7 +595,7 @@ const SingleGenerator: React.FC = () => {
                             </div>
                         )}
 
-                        {result && (
+                        {(result || (isProcessing && result)) && (
                             <div className="flex-1 flex flex-col gap-4 animate-fade-in relative z-10 overflow-hidden h-full">
                                 {result.image && (
                                     <div className="flex-1 rounded-xl overflow-hidden shadow-2xl bg-black/40 flex items-center justify-center group relative min-h-0">
@@ -528,6 +606,11 @@ const SingleGenerator: React.FC = () => {
                                             onClick={() => {
                                                 setViewingImage(result.image!);
                                                 setViewingPrompt(result.text || config.userPrompt);
+                                                setViewingMeta({
+                                                    date: Date.now(),
+                                                    resolution: config.resolution,
+                                                    inputCount: images.length
+                                                });
                                             }}
                                         />
                                         <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center pointer-events-none backdrop-blur-[2px]">
@@ -541,6 +624,15 @@ const SingleGenerator: React.FC = () => {
                                     <div className="mx-4 mb-4 p-4 bg-slate-800/50 rounded-2xl border border-slate-700/50 text-slate-200 text-sm leading-relaxed whitespace-pre-wrap shadow-inner max-h-40 overflow-y-auto custom-scrollbar shrink-0">
                                         <h3 className="text-xs font-bold text-slate-500 uppercase mb-2 tracking-wider">Model Output</h3>
                                         {result.text}
+                                    </div>
+                                )}
+                                
+                                {result.usageMetadata && (
+                                    <div className="mx-4 mb-2 p-2 bg-slate-800/30 rounded-xl border border-slate-700/30 flex gap-4 text-xs text-slate-400 justify-end">
+                                        <span title="Prompt / Candidates / Total">
+                                            <i className="fas fa-microchip mr-1"></i>
+                                            {result.usageMetadata.totalTokenCount} tokens
+                                        </span>
                                     </div>
                                 )}
                             </div>
@@ -571,6 +663,11 @@ const SingleGenerator: React.FC = () => {
                                                 onClick={() => {
                                                     setViewingImage(fullImgSrc); // View FULL image in modal
                                                     setViewingPrompt(item.prompt);
+                                                    setViewingMeta({
+                                                        date: item.timestamp,
+                                                        resolution: item.outputResolution,
+                                                        inputCount: item.inputImageInfo?.count
+                                                    });
                                                 }}
                                             />
                                         ) : (
@@ -592,6 +689,11 @@ const SingleGenerator: React.FC = () => {
                                                         onClick={() => {
                                                             setViewingImage(fullImgSrc);
                                                             setViewingPrompt(item.prompt);
+                                                            setViewingMeta({
+                                                                date: item.timestamp,
+                                                                resolution: item.outputResolution,
+                                                                inputCount: item.inputImageInfo?.count
+                                                            });
                                                         }}
                                                         className="w-8 h-8 rounded-full bg-slate-700 text-white flex items-center justify-center hover:bg-slate-600 transition-colors"
                                                         title="View"

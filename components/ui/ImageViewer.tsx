@@ -1,16 +1,21 @@
 
 import React, { useEffect, useState, useRef } from 'react';
 import Button from './Button';
+import { useLanguage } from '../../contexts/LanguageContext';
 
 interface ImageViewerProps {
     src: string;
     alt?: string;
     prompt?: string;
+    date?: number | string;
+    resolution?: string;
+    inputImagesCount?: number;
     onClose: () => void;
     onDownload?: () => void;
 }
 
-const ImageViewer: React.FC<ImageViewerProps> = ({ src, alt, prompt, onClose, onDownload }) => {
+const ImageViewer: React.FC<ImageViewerProps> = ({ src, alt, prompt, date, resolution, inputImagesCount, onClose, onDownload }) => {
+    const { t } = useLanguage();
     const [zoom, setZoom] = useState(1);
     const [pan, setPan] = useState({ x: 0, y: 0 });
     const [isDragging, setIsDragging] = useState(false);
@@ -82,35 +87,7 @@ const ImageViewer: React.FC<ImageViewerProps> = ({ src, alt, prompt, onClose, on
             className="fixed inset-0 z-[200] bg-black/95 flex items-center justify-center animate-fade-in backdrop-blur-md cursor-pointer overflow-hidden"
             onClick={onClose}
         >
-            {/* Top Toolbar */}
-            <div 
-                className="absolute top-4 right-4 z-50 flex gap-2 pointer-events-auto" 
-                onClick={(e) => e.stopPropagation()}
-            >
-                <div className="bg-slate-800/80 rounded-full flex items-center px-2 mr-2 border border-slate-700">
-                    <button 
-                        onClick={() => setZoom(z => Math.max(1, z - 0.5))}
-                        className="w-8 h-8 flex items-center justify-center text-white/70 hover:text-white"
-                    >
-                        <i className="fas fa-minus text-xs"></i>
-                    </button>
-                    <span className="text-xs font-mono w-10 text-center text-slate-300">{Math.round(zoom * 100)}%</span>
-                    <button 
-                        onClick={() => setZoom(z => Math.min(5, z + 0.5))}
-                        className="w-8 h-8 flex items-center justify-center text-white/70 hover:text-white"
-                    >
-                        <i className="fas fa-plus text-xs"></i>
-                    </button>
-                </div>
-                <button 
-                    onClick={onClose}
-                    className="text-white/70 hover:text-white bg-slate-800/50 p-2 rounded-full transition-colors w-10 h-10 flex items-center justify-center border border-slate-700"
-                >
-                    <i className="fas fa-times text-xl"></i>
-                </button>
-            </div>
-
-            <div className="flex flex-col md:flex-row w-full h-full max-w-[95vw] max-h-[95vh] mx-auto gap-6 pointer-events-none">
+            <div className="flex flex-col md:flex-row w-full h-full max-w-[95vw] max-h-[95vh] mx-auto gap-0 md:gap-6 pointer-events-none pt-0 md:pt-0">
                 
                 {/* Image Area */}
                 <div 
@@ -137,18 +114,52 @@ const ImageViewer: React.FC<ImageViewerProps> = ({ src, alt, prompt, onClose, on
                 {/* Metadata Sidebar */}
                 {prompt && (
                     <div 
-                        className="w-full md:w-80 bg-slate-900/90 border-l border-slate-700 p-6 flex flex-col h-auto md:h-full rounded-xl overflow-hidden backdrop-blur-md pointer-events-auto cursor-default shadow-2xl shrink-0"
+                        className="w-full md:w-80 bg-slate-900/90 border-l border-slate-700 p-6 flex flex-col h-auto md:h-full rounded-xl overflow-hidden backdrop-blur-md pointer-events-auto cursor-default shadow-2xl shrink-0 relative"
                         onClick={(e) => e.stopPropagation()}
                     >
+                        {/* Close Button - Top Right */}
+                        <button 
+                            onClick={onClose}
+                            className="absolute top-4 right-4 z-[60] text-white bg-slate-700/80 hover:bg-slate-600 p-2 rounded-full transition-all w-9 h-9 flex items-center justify-center border border-slate-600 shadow-xl hover:scale-105"
+                            title="Close"
+                        >
+                            <i className="fas fa-times text-base"></i>
+                        </button>
+
                         <h3 className="text-lg font-bold text-white mb-4 flex items-center gap-2">
                             <i className="fas fa-info-circle text-blue-500"></i>
-                            Info
+                            {t('info_label')}
                         </h3>
                         
-                        <div className="flex-1 overflow-y-auto custom-scrollbar mb-4">
-                            <label htmlFor="prompt-display" className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">Prompt</label>
-                            <div id="prompt-display" className="text-sm text-slate-200 whitespace-pre-wrap leading-relaxed bg-slate-800/50 p-3 rounded-lg border border-slate-700/50">
-                                {prompt}
+                        <div className="flex-1 overflow-y-auto custom-scrollbar mb-4 space-y-4">
+                            {/* Metadata Grid */}
+                            <div className="grid grid-cols-2 gap-3 mb-4">
+                                {date && (
+                                    <div className="bg-slate-800/50 p-2 rounded-lg border border-slate-700/50">
+                                        <div className="text-xs text-slate-400 mb-1">{t('date_label') || 'Date'}</div>
+                                        <div className="text-sm font-mono text-slate-200">
+                                            {new Date(date).toLocaleDateString()}
+                                        </div>
+                                    </div>
+                                )}
+                                <div className="bg-slate-800/50 p-2 rounded-lg border border-slate-700/50">
+                                    <div className="text-xs text-slate-400 mb-1">{t('resolution_label')}</div>
+                                    <div className="text-sm font-mono text-slate-200">{resolution || 'N/A'}</div>
+                                </div>
+                                <div className="bg-slate-800/50 p-2 rounded-lg border border-slate-700/50">
+                                    <div className="text-xs text-slate-400 mb-1">{t('input_images_count_label') || 'Input Images'}</div>
+                                    <div className="text-sm text-slate-200 flex items-center gap-2">
+                                        <i className={`fas fa-images ${inputImagesCount ? 'text-green-400' : 'text-slate-500'}`}></i>
+                                        <span>{inputImagesCount ? `${inputImagesCount} used` : 'None'}</span>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div>
+                                <label htmlFor="prompt-display" className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">{t('user_prompt_label')}</label>
+                                <div id="prompt-display" className="text-sm text-slate-200 whitespace-pre-wrap leading-relaxed bg-slate-800/50 p-3 rounded-lg border border-slate-700/50 font-mono text-xs">
+                                    {prompt}
+                                </div>
                             </div>
                         </div>
 
@@ -159,7 +170,7 @@ const ImageViewer: React.FC<ImageViewerProps> = ({ src, alt, prompt, onClose, on
                                     className="w-full justify-center" 
                                     icon="fa-download"
                                 >
-                                    Download Image
+                                    {t('download_btn')}
                                 </Button>
                             </div>
                         )}

@@ -1,6 +1,6 @@
 
 import React, { createContext, useContext, useEffect, useState } from 'react';
-import { AppTheme, getSystemSettings, saveSystemSettings } from '../services/settingsService';
+import { AppTheme, getSystemSettings, saveSystemSettings, syncSystemSettings } from '../services/settingsService';
 
 interface ThemeColors {
     primary: string;
@@ -39,6 +39,17 @@ export const ThemeProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     const [settings, setSettings] = useState(getSystemSettings());
     const [theme, setThemeState] = useState<AppTheme>(settings.theme || 'default');
     const [newYearMode, setNewYearModeState] = useState<boolean>(settings.newYearMode || false);
+
+    // Load system settings from server on mount
+    useEffect(() => {
+        const loadSettings = async () => {
+            const remoteSettings = await syncSystemSettings();
+            if (remoteSettings) {
+                setSettings(remoteSettings);
+            }
+        };
+        loadSettings();
+    }, []);
 
     // Sync state with settings file logic
     useEffect(() => {

@@ -35,13 +35,28 @@ type BatchMode = 'image' | 'text';
 
 const CloudBatchProcessor: React.FC = () => {
     const { t } = useLanguage();
+
+    const translatedAspectRatios = [
+        { value: 'Auto', label: t('ar_auto') },
+        { value: '1:1', label: t('ar_square') },
+        { value: '9:16', label: t('ar_portrait_mobile') },
+        { value: '16:9', label: t('ar_landscape') },
+        { value: '3:4', label: t('ar_portrait_standard') },
+        { value: '4:3', label: t('ar_landscape_standard') },
+        { value: '3:2', label: t('ar_classic_photo') },
+        { value: '2:3', label: t('ar_portrait_photo') },
+        { value: '5:4', label: t('ar_print') },
+        { value: '4:5', label: t('ar_instagram') },
+        { value: '21:9', label: t('ar_cinematic') },
+    ];
+
     const { presets } = usePresets();
     const user = getCurrentUser();
 
     const [mode, setMode] = useState<BatchMode>('image');
 
     const [config, setConfig] = useState<ProcessingConfig>({
-        model: ModelType.GEMINI_2_5_FLASH_IMAGE, 
+        model: ModelType.GEMINI_3_PRO_IMAGE, 
         temperature: 1.0,
         systemPrompt: presets.length > 0 ? presets[0].content : '',
         userPrompt: '',
@@ -73,30 +88,51 @@ const CloudBatchProcessor: React.FC = () => {
     const [isSavingToGallery, setIsSavingToGallery] = useState(false);
 
     useEffect(() => {
-        const stored = localStorage.getItem('gemini_cloud_jobs');
-        if (stored) {
+        if (!user) return;
+        
+        const loadJobs = async () => {
             try {
-                const parsedJobs: CloudBatchJob[] = JSON.parse(stored);
-                
-                // Filter out jobs older than 7 days
-                const now = Date.now();
-                const validJobs = parsedJobs.filter(job => {
-                    // Keep jobs without timestamp (legacy) or within 7 days
-                    if (!job.timestamp) return true;
-                    return (now - job.timestamp) < SEVEN_DAYS_MS;
-                });
-
-                if (validJobs.length !== parsedJobs.length) {
-                    console.log(`Cleaned up ${parsedJobs.length - validJobs.length} expired jobs.`);
-                    localStorage.setItem('gemini_cloud_jobs', JSON.stringify(validJobs));
+                const res = await fetch(`/api/cloud-jobs/${user.id}`);
+                if (res.ok) {
+                    const parsedJobs: CloudBatchJob[] = await res.json();
+                    
+                    // Filter out jobs older than 7 days
+                    const now = Date.now();
+                    const validJobs = parsedJobs.filter(job => {
+                        // Keep jobs without timestamp (legacy) or within 7 days
+                        if (!job.timestamp) return true;
+                        return (now - job.timestamp) < SEVEN_DAYS_MS;
+                    });
+                    
+                    setJobs(validJobs);
                 }
-
-                setJobs(validJobs);
             } catch (e) {
-                console.error("Failed to load jobs", e);
+                console.error("Failed to load cloud jobs from server", e);
             }
-        }
-    }, []);
+        };
+
+        loadJobs();
+    }, [user?.id]);
+
+    // Save state to server
+    useEffect(() => {
+        if (!user || jobs.length === 0) return;
+        
+        const saveJobs = async () => {
+            try {
+                await fetch(`/api/cloud-jobs/${user.id}`, {
+                     method: 'POST',
+                     headers: { 'Content-Type': 'application/json' },
+                     body: JSON.stringify(jobs)
+                });
+            } catch (e) {
+                console.error("Failed to save cloud jobs to server", e);
+            }
+        };
+
+        const timeout = setTimeout(saveJobs, 1000); // Debounce save
+        return () => clearTimeout(timeout);
+    }, [jobs, user?.id]);
 
     // --- AUTO-POLLING LOGIC ---
     useEffect(() => {
@@ -121,7 +157,6 @@ const CloudBatchProcessor: React.FC = () => {
 
     const saveJobs = (newJobs: CloudBatchJob[]) => {
         setJobs(newJobs);
-        localStorage.setItem('gemini_cloud_jobs', JSON.stringify(newJobs));
     };
 
     const handleClearHistory = () => {
@@ -356,10 +391,6 @@ const CloudBatchProcessor: React.FC = () => {
             
             setJobs(prevJobs => prevJobs.map(j => j.id === job.id ? updatedJob : j));
             
-            const currentStored = JSON.parse(localStorage.getItem('gemini_cloud_jobs') || '[]');
-            const newStored = currentStored.map((j: CloudBatchJob) => j.id === job.id ? updatedJob : j);
-            localStorage.setItem('gemini_cloud_jobs', JSON.stringify(newStored));
-
             return updatedJob;
         } catch (error) {
             console.error("Failed to check status", error);
@@ -574,6 +605,8 @@ const CloudBatchProcessor: React.FC = () => {
         const preset = presets.find(p => p.name === e.target.value);
         if (preset) {
             setConfig(prev => ({ ...prev, systemPrompt: preset.content }));
+        } else {
+            setConfig(prev => ({ ...prev, systemPrompt: '' }));
         }
     };
 
@@ -670,13 +703,13 @@ const CloudBatchProcessor: React.FC = () => {
                             onClick={() => setMode('image')}
                             className={`px-4 py-2 rounded-md text-sm font-bold transition-all flex items-center gap-2 ${mode === 'image' ? 'bg-theme-primary text-white shadow-lg' : 'text-slate-400 hover:text-white'}`}
                         >
-                            <i className="fas fa-image"></i> Images
+                            <i className="fas fa-image"></i> {t('mode_images')}
                         </button>
                         <button 
                             onClick={() => setMode('text')}
                             className={`px-4 py-2 rounded-md text-sm font-bold transition-all flex items-center gap-2 ${mode === 'text' ? 'bg-theme-primary text-white shadow-lg' : 'text-slate-400 hover:text-white'}`}
                         >
-                            <i className="fas fa-file-alt"></i> Text / CSV
+                            <i className="fas fa-file-alt"></i> {t('mode_text_csv')}
                         </button>
                      </div>
                 </div>
@@ -688,7 +721,7 @@ const CloudBatchProcessor: React.FC = () => {
                         {mode === 'image' && (
                             <>
                                 <Select label={t('resolution_label')} options={RESOLUTIONS} value={config.resolution} onChange={e => setConfig({ ...config, resolution: e.target.value })} />
-                                <Select label={t('ar_label')} options={ASPECT_RATIOS} value={config.aspectRatio} onChange={e => setConfig({ ...config, aspectRatio: e.target.value })} />
+                                <Select label={t('ar_label')} options={translatedAspectRatios} value={config.aspectRatio} onChange={e => setConfig({ ...config, aspectRatio: e.target.value })} />
                             </>
                         )}
                         
@@ -710,19 +743,19 @@ const CloudBatchProcessor: React.FC = () => {
                         <div>
                             <label className="block text-sm font-medium text-slate-300 mb-2">{t('preset_label')}</label>
                             <select className="w-full bg-slate-800 border border-slate-700 text-slate-100 rounded-lg px-4 py-3 appearance-none focus:outline-none focus:ring-2 focus:ring-blue-500" onChange={handlePresetChange} defaultValue="">
-                                <option value="" disabled>{t('load_preset_placeholder')}</option>
+                                <option value="">{t('load_preset_placeholder')}</option>
                                 {presets.map(p => ( <option key={p.name} value={p.name}>{p.name}</option> ))}
                             </select>
                         </div>
                         <div>
-                             <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2 ml-1">Job Name (Optional)</label>
-                             <input type="text" className="w-full bg-slate-800 border border-slate-700 text-slate-100 rounded-xl px-4 py-3 focus:outline-none focus:ring-2 focus:ring-blue-500/50 placeholder-slate-600" placeholder="e.g. Project A" value={customJobName} onChange={(e) => setCustomJobName(e.target.value)} />
+                             <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2 ml-1">{t('job_name_optional')}</label>
+                             <input type="text" className="w-full bg-slate-800 border border-slate-700 text-slate-100 rounded-xl px-4 py-3 focus:outline-none focus:ring-2 focus:ring-blue-500/50 placeholder-slate-600" placeholder={t('job_name_placeholder')} value={customJobName} onChange={(e) => setCustomJobName(e.target.value)} />
                         </div>
                     </div>
                     
                     <div className="h-full flex flex-col gap-4">
                          <TextArea label={t('system_instr_label')} value={config.systemPrompt} onChange={e => setConfig({ ...config, systemPrompt: e.target.value })} className="flex-1" />
-                         <TextArea label={t('user_prompt_label')} value={config.userPrompt} onChange={e => setConfig({ ...config, userPrompt: e.target.value })} className="flex-1" placeholder={mode === 'text' ? "Analyze the attached files..." : "Describe image generation..."} />
+                         <TextArea label={t('user_prompt_label')} value={config.userPrompt} onChange={e => setConfig({ ...config, userPrompt: e.target.value })} className="flex-1" placeholder={mode === 'text' ? t('analyze_files_placeholder') : t('image_gen_placeholder')} />
                     </div>
                 </div>
 
@@ -730,7 +763,7 @@ const CloudBatchProcessor: React.FC = () => {
                     <div className="flex justify-between items-center mb-4">
                         <h2 className="text-lg font-medium text-white flex items-center gap-2">
                              <i className={`fas ${mode === 'image' ? 'fa-images' : 'fa-file-alt'} text-slate-400`}></i>
-                             Input Files
+                             {t('input_files')}
                         </h2>
                         <span className="text-xs text-slate-400">{mode === 'image' ? images.length : textFiles.length} files</span>
                     </div>

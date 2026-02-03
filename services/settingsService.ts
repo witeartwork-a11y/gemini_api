@@ -7,6 +7,7 @@ export interface SystemSettings {
     showCreativity: boolean;
     showRepeats: boolean;
     theme: AppTheme;
+    language?: 'en' | 'ru';
     newYearMode: boolean;
     safetySettings: SafetySetting[];
     mediaResolution: MediaResolution;
@@ -22,6 +23,23 @@ const DEFAULT_SAFETY: SafetySetting[] = [
     { category: HarmCategory.HARM_CATEGORY_CIVIC_INTEGRITY, threshold: HarmBlockThreshold.OFF },
 ];
 
+export const syncSystemSettings = async (): Promise<SystemSettings | null> => {
+    try {
+        const res = await fetch('/api/system-settings');
+        if (res.ok) {
+            const remoteSettings = await res.json();
+            if (remoteSettings) {
+                localStorage.setItem(SETTINGS_KEY, JSON.stringify(remoteSettings));
+                window.dispatchEvent(new Event('system-settings-changed'));
+                return remoteSettings;
+            }
+        }
+    } catch (e) {
+        console.error("Sync settings failed", e);
+    }
+    return null;
+};
+
 export const getSystemSettings = (): SystemSettings => {
     const stored = localStorage.getItem(SETTINGS_KEY);
     if (stored) {
@@ -32,6 +50,7 @@ export const getSystemSettings = (): SystemSettings => {
                 showCreativity: true,
                 showRepeats: true,
                 theme: 'default',
+                language: 'en',
                 newYearMode: false,
                 safetySettings: DEFAULT_SAFETY,
                 mediaResolution: MediaResolution.HIGH, // Default to High
@@ -46,14 +65,25 @@ export const getSystemSettings = (): SystemSettings => {
         showCreativity: true, 
         showRepeats: true,
         theme: 'default',
+        language: 'en',
         newYearMode: false,
         safetySettings: DEFAULT_SAFETY,
         mediaResolution: MediaResolution.HIGH // Default to High
     };
 };
 
-export const saveSystemSettings = (settings: SystemSettings) => {
+export const saveSystemSettings = async (settings: SystemSettings) => {
     localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
     // Dispatch event so components can react immediately if needed (optional optimization)
     window.dispatchEvent(new Event('system-settings-changed'));
+    
+    try {
+        await fetch('/api/system-settings', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(settings)
+        });
+    } catch (e) {
+        console.error("Failed to save settings to server", e);
+    }
 };

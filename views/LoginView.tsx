@@ -2,6 +2,8 @@
 import React, { useState } from 'react';
 import Button from '../components/ui/Button';
 import { login } from '../services/authService';
+import { syncSystemSettings } from '../services/settingsService';
+import { initializeUsers } from '../services/authService';
 
 const LoginView: React.FC = () => {
     const [username, setUsername] = useState('');
@@ -12,6 +14,8 @@ const LoginView: React.FC = () => {
         e.preventDefault();
         const user = await login(username, password);
         if (user) {
+            // Load system settings and user preferences from server
+            await syncSystemSettings();
             window.location.reload();
         } else {
             setError("Invalid credentials");

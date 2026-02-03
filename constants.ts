@@ -9,6 +9,22 @@ export const MODELS = [
     { value: ModelType.GEMINI_2_5_FLASH_IMAGE, label: '2.5 Flash image' },
 ];
 
+export const MODEL_PRICING: {[key: string]: { input: number, output: number, perImage?: number }} = {
+    // Pricing per 1 token
+    // Gemini 3 Pro: $2 (Input) / $12 (Output) per 1M tokens (< 200k context)
+    [ModelType.GEMINI_3_PRO]: { input: 0.000002, output: 0.000012 }, 
+    
+    // Gemini 3 Pro Image: $2 (Text Input) / $0.134 per Image
+    [ModelType.GEMINI_3_PRO_IMAGE]: { input: 0.000002, output: 0.000012, perImage: 0.134 }, 
+    
+    // Gemini 3 Flash: $0.50 (Input) / $3 (Output) per 1M tokens
+    [ModelType.GEMINI_3_FLASH]: { input: 0.0000005, output: 0.000003 },
+    
+    // Gemini 2.5: Count tokens only (Cost = 0)
+    [ModelType.GEMINI_2_5_FLASH]: { input: 0, output: 0 },
+    [ModelType.GEMINI_2_5_FLASH_IMAGE]: { input: 0, output: 0, perImage: 0 },
+};
+
 export const ASPECT_RATIOS = [
     { value: 'Auto', label: 'Auto' },
     { value: '1:1', label: '1:1 (Square)' },
