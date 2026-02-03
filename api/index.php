@@ -89,6 +89,18 @@ elseif ($method === 'GET' && $path === '/api/system-settings') {
 elseif ($method === 'POST' && $path === '/api/system-settings') {
     saveSystemSettingsAPI();
 }
+// Route: GET /api/presets - Get all presets (public)
+elseif ($method === 'GET' && $path === '/api/presets') {
+    getPresets();
+}
+// Route: POST /api/presets - Create/Update preset (admin only)
+elseif ($method === 'POST' && $path === '/api/presets') {
+    savePreset();
+}
+// Route: DELETE /api/presets/{name} - Delete preset (admin only)
+elseif ($method === 'DELETE' && preg_match('#^/api/presets/(.+)$#', $path, $matches)) {
+    deletePreset(urldecode($matches[1]));
+}
 else {
     http_response_code(404);
     echo json_encode(['error' => 'Not found']);
@@ -608,4 +620,159 @@ function saveSystemSettingsAPI() {
         http_response_code(500);
         echo json_encode(['error' => $e->getMessage()]);
     }
+}
+
+// ============= PRESETS FUNCTIONS =============
+
+function getPresets() {
+    $presetsFile = DATA_DIR . '/presets.json';
+    
+    if (file_exists($presetsFile)) {
+        $presets = json_decode(file_get_contents($presetsFile), true);
+        echo json_encode($presets ?? []);
+    } else {
+        // Return default presets on first load
+        $defaults = [
+            [
+                'name' => 'High Fidelity Restoration',
+                'content' => 'You are an expert AI specialized in High-Fidelity Image Restoration. Recreate the image with high details, removing blur and noise while preserving the original composition.'
+            ],
+            [
+                'name' => 'Creative Artistic Style',
+                'content' => 'Transform this image into a beautiful artistic style. Use vibrant colors and expressive brushstrokes while maintaining the core subject.'
+            ],
+            [
+                'name' => 'Photorealistic Enhancement',
+                'content' => 'Enhance this image to professional photorealistic quality. Focus on perfect lighting, sharp textures, and realistic shadows.'
+            ],
+            [
+                'name' => 'Anime Conversion',
+                'content' => 'Transform this image into a high-quality anime style illustration. Use crisp lines and cel-shaded aesthetic.'
+            ]
+        ];
+        
+        // Save defaults to file
+        file_put_contents($presetsFile, json_encode($defaults, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE));
+        echo json_encode($defaults);
+    }
+}
+
+function savePreset() {
+    $data = getJsonInput();
+    
+    // Validate required fields
+    if (!isset($data['name']) || !isset($data['content'])) {
+        http_response_code(400);
+        echo json_encode(['error' => 'Name and content are required']);
+        return;
+    }
+    
+    // Check if user is admin
+    if (!isset($data['userId'])) {
+        http_response_code(401);
+        echo json_encode(['error' => 'Authentication required']);
+        return;
+    }
+    
+    $usersFile = DATA_DIR . '/users.json';
+    if (!file_exists($usersFile)) {
+        http_response_code(403);
+        echo json_encode(['error' => 'Access denied']);
+        return;
+    }
+    
+    $users = json_decode(file_get_contents($usersFile), true);
+    $isAdmin = false;
+    foreach ($users as $user) {
+        if ($user['id'] === $data['userId'] && isset($user['isAdmin']) && $user['isAdmin']) {
+            $isAdmin = true;
+            break;
+        }
+    }
+    
+    if (!$isAdmin) {
+        http_response_code(403);
+        echo json_encode(['error' => 'Admin access required']);
+        return;
+    }
+    
+    // Load existing presets
+    $presetsFile = DATA_DIR . '/presets.json';
+    $presets = [];
+    if (file_exists($presetsFile)) {
+        $presets = json_decode(file_get_contents($presetsFile), true) ?? [];
+    }
+    
+    // Find and update or add new preset
+    $found = false;
+    foreach ($presets as &$preset) {
+        if ($preset['name'] === $data['name']) {
+            $preset['content'] = $data['content'];
+            $found = true;
+            break;
+        }
+    }
+    
+    if (!$found) {
+        $presets[] = [
+            'name' => $data['name'],
+            'content' => $data['content']
+        ];
+    }
+    
+    // Save to file
+    file_put_contents($presetsFile, json_encode($presets, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE));
+    echo json_encode(['success' => true, 'presets' => $presets]);
+}
+
+function deletePreset($presetName) {
+    $data = getJsonInput();
+    
+    // Check if user is admin
+    if (!isset($data['userId'])) {
+        http_response_code(401);
+        echo json_encode(['error' => 'Authentication required']);
+        return;
+    }
+    
+    $usersFile = DATA_DIR . '/users.json';
+    if (!file_exists($usersFile)) {
+        http_response_code(403);
+        echo json_encode(['error' => 'Access denied']);
+        return;
+    }
+    
+    $users = json_decode(file_get_contents($usersFile), true);
+    $isAdmin = false;
+    foreach ($users as $user) {
+        if ($user['id'] === $data['userId'] && isset($user['isAdmin']) && $user['isAdmin']) {
+            $isAdmin = true;
+            break;
+        }
+    }
+    
+    if (!$isAdmin) {
+        http_response_code(403);
+        echo json_encode(['error' => 'Admin access required']);
+        return;
+    }
+    
+    // Load presets
+    $presetsFile = DATA_DIR . '/presets.json';
+    if (!file_exists($presetsFile)) {
+        http_response_code(404);
+        echo json_encode(['error' => 'Presets file not found']);
+        return;
+    }
+    
+    $presets = json_decode(file_get_contents($presetsFile), true) ?? [];
+    
+    // Filter out the preset to delete
+    $presets = array_values(array_filter($presets, function($preset) use ($presetName) {
+        return $preset['name'] !== $presetName;
+    }));
+    
+    // Save updated presets
+    file_put_contents($presetsFile, json_encode($presets, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE));
+    echo json_encode(['success' => true, 'presets' => $presets]);
 }

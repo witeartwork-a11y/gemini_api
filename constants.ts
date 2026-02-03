@@ -68,22 +68,3 @@ export const MEDIA_RESOLUTIONS_OPTIONS = [
     { value: MediaResolution.MEDIUM, label: 'Medium' },
     { value: MediaResolution.HIGH, label: 'High (Best Quality)' },
 ];
-
-export const PROMPT_PRESETS = [
-    {
-        name: "High Fidelity Restoration",
-        content: "You are an expert AI specialized in High-Fidelity Image Restoration. Recreate the image with high details, removing blur and noise while preserving the original composition."
-    },
-    {
-        name: "Creative Artistic Style",
-        content: "Transform this image into a beautiful artistic style. Use vibrant colors and expressive brushstrokes while maintaining the core subject."
-    },
-    {
-        name: "Photorealistic Enhancement",
-        content: "Enhance this image to professional photorealistic quality. Focus on perfect lighting, sharp textures, and realistic shadows."
-    },
-    {
-        name: "Anime Conversion",
-        content: "Transform this image into a high-quality anime style illustration. Use crisp lines and cel-shaded aesthetic."
-    }
-];

@@ -36,7 +36,7 @@ const SingleGenerator: React.FC = () => {
         { value: '21:9', label: t('ar_cinematic') },
     ];
 
-    const { presets, savePreset, deletePreset } = usePresets();
+    const { presets } = usePresets();
     const user = getCurrentUser();
     
     // Config State
@@ -308,14 +308,6 @@ const SingleGenerator: React.FC = () => {
         setConfig(prev => ({ ...prev, systemPrompt: "" }));
     };
 
-    const handleSavePreset = () => {
-        const name = prompt(t('enter_preset_name'));
-        if (name && config.systemPrompt) {
-            savePreset(name, config.systemPrompt);
-            setSelectedPresetName(name);
-        }
-    };
-
     return (
         <div className="flex flex-col gap-8 pb-10">
             {viewingImage && (
@@ -380,14 +372,10 @@ const SingleGenerator: React.FC = () => {
                                         </div>
                                     </div>
                                     
-                                    {selectedPresetName ? (
+                                    {selectedPresetName && (
                                          <Button variant="secondary" onClick={clearPreset} title="Clear Preset" className="px-3 bg-slate-800">
                                             <i className="fas fa-times"></i>
                                          </Button>
-                                    ) : (
-                                        <Button variant="secondary" onClick={handleSavePreset} title={t('add_preset')} className="px-3">
-                                            <i className="fas fa-save"></i>
-                                        </Button>
                                     )}
                                 </div>
                             </div>

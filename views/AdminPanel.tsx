@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect } from 'react';
 import Button from '../components/ui/Button';
-import { getUsers, saveUser, deleteUser, sha256 } from '../services/authService';
+import { getUsers, saveUser, deleteUser, sha256, getCurrentUser } from '../services/authService';
 import { User } from '../types';
 import { MODELS } from '../constants';
 import { usePresets, Preset } from '../hooks/usePresets';
@@ -10,7 +10,8 @@ import { useLanguage } from '../contexts/LanguageContext';
 
 const AdminPanel: React.FC = () => {
     const [users, setUsers] = useState<User[]>([]);
-    const { presets, savePreset, deletePreset } = usePresets();
+    const currentUser = getCurrentUser();
+    const { presets, savePreset, deletePreset, refreshPresets } = usePresets(currentUser?.id);
     const { t } = useLanguage();
     
     // User Form State
@@ -120,10 +121,14 @@ const AdminPanel: React.FC = () => {
     };
 
     // --- Preset Logic ---
-    const handleSavePreset = () => {
+    const handleSavePreset = async () => {
         if(!presetName || !presetContent) return alert("Name and Content required");
-        savePreset(presetName, presetContent);
-        resetPresetForm();
+        try {
+            await savePreset(presetName, presetContent);
+            resetPresetForm();
+        } catch (error: any) {
+            alert(error.message || 'Failed to save preset');
+        }
     };
 
     const handleEditPreset = (p: Preset) => {
@@ -132,9 +137,13 @@ const AdminPanel: React.FC = () => {
         setEditingPreset(true);
     };
 
-    const handleDeletePreset = (name: string) => {
+    const handleDeletePreset = async (name: string) => {
         if(confirm(`Delete preset "${name}"?`)) {
-            deletePreset(name);
+            try {
+                await deletePreset(name);
+            } catch (error: any) {
+                alert(error.message || 'Failed to delete preset');
+            }
         }
     };
 

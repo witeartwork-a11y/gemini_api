@@ -1,55 +1,63 @@
 
 import { useState, useEffect } from 'react';
-import { PROMPT_PRESETS } from '../constants';
+import { presetsService } from '../services/presetsService';
 
 export interface Preset {
     name: string;
     content: string;
-    // isCustom property removed as all are treated equally now
 }
 
-export const usePresets = () => {
+export const usePresets = (userId?: string) => {
     const [presets, setPresets] = useState<Preset[]>([]);
+    const [loading, setLoading] = useState(true);
+
+    const loadPresets = async () => {
+        setLoading(true);
+        try {
+            const data = await presetsService.getAll();
+            setPresets(data);
+        } catch (error) {
+            console.error('Failed to load presets:', error);
+        } finally {
+            setLoading(false);
+        }
+    };
 
     useEffect(() => {
-        const stored = localStorage.getItem('gemini_user_presets');
-        if (stored) {
-            try {
-                setPresets(JSON.parse(stored));
-            } catch (e) {
-                // Fallback if JSON fails
-                setPresets(PROMPT_PRESETS);
-                localStorage.setItem('gemini_user_presets', JSON.stringify(PROMPT_PRESETS));
-            }
-        } else {
-            // First run: load defaults into storage so they can be managed/deleted
-            setPresets(PROMPT_PRESETS);
-            localStorage.setItem('gemini_user_presets', JSON.stringify(PROMPT_PRESETS));
-        }
+        loadPresets();
     }, []);
 
-    const savePreset = (name: string, content: string) => {
-        const newPreset: Preset = { name, content };
-        // Create copy
-        const updatedPresets = [...presets];
-        
-        // Check if exists
-        const existingIndex = updatedPresets.findIndex(p => p.name === name);
-        if (existingIndex >= 0) {
-            updatedPresets[existingIndex] = newPreset;
-        } else {
-            updatedPresets.push(newPreset);
+    const savePreset = async (name: string, content: string) => {
+        if (!userId) {
+            throw new Error('User ID required to save preset');
         }
 
-        setPresets(updatedPresets);
-        localStorage.setItem('gemini_user_presets', JSON.stringify(updatedPresets));
+        try {
+            const result = await presetsService.save(name, content, userId);
+            if (result.success && result.presets) {
+                setPresets(result.presets);
+            }
+        } catch (error) {
+            console.error('Failed to save preset:', error);
+            throw error;
+        }
     };
 
-    const deletePreset = (name: string) => {
-        const updatedPresets = presets.filter(p => p.name !== name);
-        setPresets(updatedPresets);
-        localStorage.setItem('gemini_user_presets', JSON.stringify(updatedPresets));
+    const deletePreset = async (name: string) => {
+        if (!userId) {
+            throw new Error('User ID required to delete preset');
+        }
+
+        try {
+            const result = await presetsService.delete(name, userId);
+            if (result.success && result.presets) {
+                setPresets(result.presets);
+            }
+        } catch (error) {
+            console.error('Failed to delete preset:', error);
+            throw error;
+        }
     };
 
-    return { presets, savePreset, deletePreset };
+    return { presets, savePreset, deletePreset, loading, refreshPresets: loadPresets };
 };
