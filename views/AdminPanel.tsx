@@ -2,7 +2,7 @@
 import React, { useState, useEffect } from 'react';
 import Button from '../components/ui/Button';
 import { getUsers, saveUser, deleteUser, sha256, getCurrentUser } from '../services/authService';
-import { User } from '../types';
+import { User, ApiProvider } from '../types';
 import { MODELS } from '../constants';
 import { usePresets, Preset } from '../hooks/usePresets';
 import { getSystemSettings, saveSystemSettings, syncSystemSettings, SystemSettings } from '../services/settingsService';
@@ -31,9 +31,20 @@ const AdminPanel: React.FC = () => {
     const [stats, setStats] = useState<any>(null);
     const [currentPage, setCurrentPage] = useState(1);
     const itemsPerPage = 7;
+    
+    // API Keys State
+    const [geminiApiKey, setGeminiApiKey] = useState<string>('');
+    const [neuroApiKey, setNeuroApiKey] = useState<string>('');
+    const [showGeminiKey, setShowGeminiKey] = useState<boolean>(false);
+    const [showNeuroKey, setShowNeuroKey] = useState<boolean>(false);
 
     useEffect(() => {
         loadData();
+        // Load API keys from localStorage
+        const geminiKey = localStorage.getItem('gemini_api_key') || '';
+        const neuroKey = localStorage.getItem('neuroapi_api_key') || '';
+        setGeminiApiKey(geminiKey);
+        setNeuroApiKey(neuroKey);
     }, []);
 
     const loadData = async () => {
@@ -167,6 +178,23 @@ const AdminPanel: React.FC = () => {
         saveSystemSettings(newSettings);
     };
 
+    const handleApiProviderChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+        const newProvider = e.target.value as ApiProvider;
+        const newSettings = { ...systemSettings, apiProvider: newProvider };
+        setSystemSettings(newSettings);
+        saveSystemSettings(newSettings);
+    };
+
+    const handleSaveGeminiKey = () => {
+        localStorage.setItem('gemini_api_key', geminiApiKey);
+        alert('Google Gemini API key saved to localStorage');
+    };
+
+    const handleSaveNeuroKey = () => {
+        localStorage.setItem('neuroapi_api_key', neuroApiKey);
+        alert('NeuroAPI key saved to localStorage');
+    };
+
     return (
         <div className="space-y-8 pb-10">
              {/* System Settings Section */}
@@ -176,6 +204,28 @@ const AdminPanel: React.FC = () => {
                     {t('system_ui_config')}
                 </h2>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                     {/* API Provider Setting */}
+                     <div className="bg-slate-900/50 p-4 rounded-xl border border-slate-700 flex justify-between items-center col-span-full">
+                        <div>
+                            <div className="text-white font-bold">🔌 API Provider</div>
+                            <div className="text-xs text-slate-400">
+                                Choose between Google Gemini or NeuroAPI. <br/>
+                                <span className="text-amber-400">⚠️ Set the corresponding API key in your local storage: 
+                                    <code className="ml-1 text-emerald-400">gemini_api_key</code> or 
+                                    <code className="ml-1 text-emerald-400">neuroapi_api_key</code>
+                                </span>
+                            </div>
+                        </div>
+                        <select 
+                            className="bg-slate-800 border-none rounded px-3 py-1 text-white text-sm outline-none cursor-pointer min-w-[160px]"
+                            value={systemSettings.apiProvider || ApiProvider.GOOGLE}
+                            onChange={handleApiProviderChange}
+                        >
+                            <option value={ApiProvider.GOOGLE}>Google Gemini</option>
+                            <option value={ApiProvider.NEUROAPI}>NeuroAPI</option>
+                        </select>
+                     </div>
+
                      {/* Default Language Setting */}
                      <div className="bg-slate-900/50 p-4 rounded-xl border border-slate-700 flex justify-between items-center">
                         <div>
@@ -394,24 +444,93 @@ const AdminPanel: React.FC = () => {
                 </div>
             </div>
 
-            {/* --- 4. Global API Key --- */}
+            {/* --- 4. API Keys Management --- */}
             <div className="bg-slate-800/50 backdrop-blur-sm p-6 rounded-2xl border border-slate-700">
                 <h2 className="text-xl font-bold text-white mb-6 flex items-center gap-2">
                     <i className="fas fa-key text-pink-500"></i>
-                    {t('global_gallery_access')}
+                    API Keys Management
                 </h2>
                 
-                <div className="bg-slate-900/50 p-4 rounded-xl border border-slate-700">
-                    <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">{t('api_key_short')}</label>
-                    <div className="flex items-center gap-2">
-                        <code className="flex-1 bg-slate-950 p-3 rounded-lg text-emerald-400 font-mono text-sm break-all select-all border border-slate-800">
-                            {globalApiKey || "Loading..."}
-                        </code>
+                <div className="space-y-4">
+                    {/* Google Gemini API Key */}
+                    <div className="bg-slate-900/50 p-4 rounded-xl border border-slate-700">
+                        <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">
+                            🔑 Google Gemini API Key
+                        </label>
+                        <div className="flex items-center gap-2">
+                            <input
+                                type={showGeminiKey ? "text" : "password"}
+                                className="flex-1 bg-slate-950 p-3 rounded-lg text-emerald-400 font-mono text-sm border border-slate-800 outline-none focus:border-purple-500"
+                                value={geminiApiKey}
+                                onChange={(e) => setGeminiApiKey(e.target.value)}
+                                placeholder="Enter your Google Gemini API key..."
+                            />
+                            <button
+                                onClick={() => setShowGeminiKey(!showGeminiKey)}
+                                className="px-3 py-2 bg-slate-800 hover:bg-slate-700 rounded text-slate-300 text-sm"
+                            >
+                                <i className={`fas ${showGeminiKey ? 'fa-eye-slash' : 'fa-eye'}`}></i>
+                            </button>
+                            <Button
+                                onClick={handleSaveGeminiKey}
+                                className="px-4 py-2 text-sm bg-purple-600 hover:bg-purple-500"
+                            >
+                                Save
+                            </Button>
+                        </div>
+                        <p className="text-xs text-slate-500 mt-2 leading-relaxed">
+                            Used when API Provider is set to <strong className="text-slate-400">Google Gemini</strong>. 
+                            Stored in browser's localStorage: <code className="text-emerald-400">gemini_api_key</code>
+                        </p>
                     </div>
-                    <p className="text-xs text-slate-500 mt-3 leading-relaxed">
-                        {t('api_key_desc')}<br/>
-                        <span className="text-slate-400 font-mono">GET /api/external_gallery?key=YOUR_KEY</span>
-                    </p>
+
+                    {/* NeuroAPI Key */}
+                    <div className="bg-slate-900/50 p-4 rounded-xl border border-slate-700">
+                        <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">
+                            🧠 NeuroAPI Key
+                        </label>
+                        <div className="flex items-center gap-2">
+                            <input
+                                type={showNeuroKey ? "text" : "password"}
+                                className="flex-1 bg-slate-950 p-3 rounded-lg text-emerald-400 font-mono text-sm border border-slate-800 outline-none focus:border-purple-500"
+                                value={neuroApiKey}
+                                onChange={(e) => setNeuroApiKey(e.target.value)}
+                                placeholder="Enter your NeuroAPI key..."
+                            />
+                            <button
+                                onClick={() => setShowNeuroKey(!showNeuroKey)}
+                                className="px-3 py-2 bg-slate-800 hover:bg-slate-700 rounded text-slate-300 text-sm"
+                            >
+                                <i className={`fas ${showNeuroKey ? 'fa-eye-slash' : 'fa-eye'}`}></i>
+                            </button>
+                            <Button
+                                onClick={handleSaveNeuroKey}
+                                className="px-4 py-2 text-sm bg-purple-600 hover:bg-purple-500"
+                            >
+                                Save
+                            </Button>
+                        </div>
+                        <p className="text-xs text-slate-500 mt-2 leading-relaxed">
+                            Used when API Provider is set to <strong className="text-slate-400">NeuroAPI</strong>. 
+                            Stored in browser's localStorage: <code className="text-emerald-400">neuroapi_api_key</code>
+                        </p>
+                    </div>
+
+                    {/* Global Gallery Access Key (unchanged) */}
+                    <div className="bg-slate-900/50 p-4 rounded-xl border border-slate-700">
+                        <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">
+                            🌐 {t('global_gallery_access')}
+                        </label>
+                        <div className="flex items-center gap-2">
+                            <code className="flex-1 bg-slate-950 p-3 rounded-lg text-emerald-400 font-mono text-sm break-all select-all border border-slate-800">
+                                {globalApiKey || "Loading..."}
+                            </code>
+                        </div>
+                        <p className="text-xs text-slate-500 mt-3 leading-relaxed">
+                            {t('api_key_desc')}<br/>
+                            <span className="text-slate-400 font-mono">GET /api/external_gallery?key=YOUR_KEY</span>
+                        </p>
+                    </div>
                 </div>
             </div>
 

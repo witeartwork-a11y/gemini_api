@@ -1,10 +1,21 @@
+export enum ApiProvider {
+    GOOGLE = 'google',
+    NEUROAPI = 'neuroapi'
+}
 
 export enum ModelType {
     GEMINI_3_PRO = 'gemini-3-pro-preview',
     GEMINI_3_PRO_IMAGE = 'gemini-3-pro-image-preview',
     GEMINI_3_FLASH = 'gemini-3-flash-preview',
     GEMINI_2_5_FLASH = 'gemini-2.5-flash',
-    GEMINI_2_5_FLASH_IMAGE = 'gemini-2.5-flash-image'
+    GEMINI_2_5_FLASH_IMAGE = 'gemini-2.5-flash-image',
+    // NeuroAPI models
+    GPT_5_MINI = 'gpt-5-mini',
+    GPT_5 = 'gpt-5',
+    GPT_4O = 'gpt-4o',
+    CLAUDE_3_5_SONNET = 'claude-3.5-sonnet',
+    GPT_IMAGE_1 = 'gpt-image-1',
+    DALL_E_3 = 'dall-e-3'
 }
 
 export enum HarmCategory {
@@ -125,6 +136,7 @@ export type UserRole = 'admin' | 'user';
 export interface UserPreferences {
     language?: 'en' | 'ru';
     theme?: 'default' | 'raspberry' | 'green';
+    apiProvider?: ApiProvider; // Google Gemini или NeuroAPI
 }
 
 export interface User {

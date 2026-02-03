@@ -1,5 +1,5 @@
 
-import { HarmBlockThreshold, HarmCategory, SafetySetting, MediaResolution } from "../types";
+import { HarmBlockThreshold, HarmCategory, SafetySetting, MediaResolution, ApiProvider } from "../types";
 
 export type AppTheme = 'default' | 'raspberry' | 'green';
 
@@ -11,6 +11,7 @@ export interface SystemSettings {
     newYearMode: boolean;
     safetySettings: SafetySetting[];
     mediaResolution: MediaResolution;
+    apiProvider?: ApiProvider; // Google or NeuroAPI
 }
 
 const SETTINGS_KEY = 'wite_ai_system_settings';
@@ -76,7 +77,8 @@ export const getSystemSettings = (): SystemSettings => {
         language: 'en',
         newYearMode: false,
         safetySettings: DEFAULT_SAFETY,
-        mediaResolution: MediaResolution.HIGH
+        mediaResolution: MediaResolution.HIGH,
+        apiProvider: ApiProvider.GOOGLE // Default to Google
     };
     
     // Check cookies for language and theme
@@ -114,4 +116,21 @@ export const saveSystemSettings = async (settings: SystemSettings) => {
     } catch (e) {
         console.error("Failed to save settings to server", e);
     }
+};
+
+/**
+ * Get current API provider
+ */
+export const getApiProvider = (): ApiProvider => {
+    const settings = getSystemSettings();
+    return settings.apiProvider || ApiProvider.GOOGLE;
+};
+
+/**
+ * Set API provider
+ */
+export const setApiProvider = async (provider: ApiProvider) => {
+    const settings = getSystemSettings();
+    settings.apiProvider = provider;
+    await saveSystemSettings(settings);
 };

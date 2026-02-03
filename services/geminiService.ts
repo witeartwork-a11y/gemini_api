@@ -1,6 +1,8 @@
 
 import { GoogleGenAI } from "@google/genai";
-import { ProcessingConfig, ModelType, ChatMessage } from "../types";
+import { ProcessingConfig, ModelType, ChatMessage, ApiProvider } from "../types";
+import * as neuroApiService from "./neuroApiService";
+import { getApiProvider } from "./settingsService";
 
 const getApiKey = (): string => {
     let key = localStorage.getItem("gemini_api_key");
@@ -38,6 +40,23 @@ export const fileToText = (file: File): Promise<string> => {
 };
 
 export const generateContent = async (
+    config: ProcessingConfig,
+    imageFiles: File[],
+    textFilesData?: { name: string, content: string }[],
+    signal?: AbortSignal
+) => {
+    // Route to appropriate provider
+    const provider = getApiProvider();
+    
+    if (provider === ApiProvider.NEUROAPI) {
+        return await neuroApiService.generateContent(config, imageFiles, textFilesData, signal);
+    }
+    
+    // Default: Google Gemini
+    return await generateContentGoogle(config, imageFiles, textFilesData, signal);
+};
+
+const generateContentGoogle = async (
     config: ProcessingConfig,
     imageFiles: File[],
     textFilesData?: { name: string, content: string }[],
@@ -170,6 +189,24 @@ export const generateContent = async (
  * Handles Chat Requests using the official Chat API
  */
 export const sendChatMessage = async (
+    model: string,
+    history: ChatMessage[],
+    newMessage: string,
+    newImages: string[], // Base64 strings
+    isImageGenerationMode: boolean
+) => {
+    // Route to appropriate provider
+    const provider = getApiProvider();
+    
+    if (provider === ApiProvider.NEUROAPI) {
+        return await neuroApiService.sendChatMessage(model, history, newMessage, newImages, isImageGenerationMode);
+    }
+    
+    // Default: Google Gemini
+    return await sendChatMessageGoogle(model, history, newMessage, newImages, isImageGenerationMode);
+};
+
+const sendChatMessageGoogle = async (
     model: string,
     history: ChatMessage[],
     newMessage: string,

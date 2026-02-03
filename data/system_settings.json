@@ -26,5 +26,6 @@
       "threshold": "OFF"
     }
   ],
-  "mediaResolution": "media_resolution_high"
+  "mediaResolution": "media_resolution_high",
+  "apiProvider": "neuroapi"
 }
