@@ -1,6 +1,7 @@
 
 import React, { createContext, useContext, useEffect, useState } from 'react';
 import { AppTheme, getSystemSettings, saveSystemSettings, syncSystemSettings } from '../services/settingsService';
+import { getCurrentUser, getUserPreferences, saveUserPreferences } from '../services/authService';
 
 interface ThemeColors {
     primary: string;
@@ -40,11 +41,28 @@ export const ThemeProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     const [theme, setThemeState] = useState<AppTheme>(settings.theme || 'default');
     const [newYearMode, setNewYearModeState] = useState<boolean>(settings.newYearMode || false);
 
-    // Load system settings from server on mount
+    // Load settings from user preferences or system settings
     useEffect(() => {
         const loadSettings = async () => {
+            const currentUser = getCurrentUser();
+            
+            // If user is logged in, load their personal preferences
+            if (currentUser) {
+                try {
+                    const prefs = await getUserPreferences(currentUser.id);
+                    if (prefs.theme) {
+                        setThemeState(prefs.theme);
+                        applyTheme(prefs.theme);
+                    }
+                } catch (e) {
+                    console.error('Failed to load user theme preference', e);
+                }
+            }
+            
+            // Also sync system settings
             const remoteSettings = await syncSystemSettings();
-            if (remoteSettings) {
+            if (remoteSettings && !currentUser) {
+                // Only use system settings if user is not logged in
                 setSettings(remoteSettings);
             }
         };
@@ -59,6 +77,15 @@ export const ThemeProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
     const setTheme = (newTheme: AppTheme) => {
         setThemeState(newTheme);
+        const currentUser = getCurrentUser();
+        
+        // Save to user preferences if logged in
+        if (currentUser) {
+            saveUserPreferences(currentUser.id, { theme: newTheme })
+                .catch(e => console.error('Failed to save user theme preference', e));
+        }
+        
+        // Also save to system settings
         const newSettings = { ...getSystemSettings(), theme: newTheme };
         saveSystemSettings(newSettings);
         applyTheme(newTheme);

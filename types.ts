@@ -122,10 +122,16 @@ export type TabId = 'single' | 'batch' | 'cloud-batch' | 'gallery' | 'admin';
 
 export type UserRole = 'admin' | 'user';
 
+export interface UserPreferences {
+    language?: 'en' | 'ru';
+    theme?: 'default' | 'raspberry' | 'green';
+}
+
 export interface User {
     id: string;
     username: string;
     password?: string; // In a real app, this would be hashed. Storing plain for simulation.
     role: UserRole;
     allowedModels: string[]; // 'all' or array of ModelTypes
+    preferences?: UserPreferences; // Personal user settings
 }

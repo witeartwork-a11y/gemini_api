@@ -44,17 +44,32 @@ export const presetsService = {
     // Delete preset (admin only)
     async delete(name: string, userId: string): Promise<{ success: boolean; presets?: Preset[] }> {
         try {
-            const response = await fetch(`${API_BASE}/presets/${encodeURIComponent(name)}`, {
+            // Use query param for name AND userId (some servers strip body on DELETE)
+            const params = new URLSearchParams({
+                name: name,
+                userId: userId
+            });
+            
+            const response = await fetch(`${API_BASE}/presets?${params.toString()}`, {
                 method: 'DELETE',
                 headers: {
                     'Content-Type': 'application/json',
                 },
-                body: JSON.stringify({ userId }),
+                body: JSON.stringify({ userId }), // Keep body for standard compliance
             });
             
             if (!response.ok) {
-                const error = await response.json();
-                throw new Error(error.error || 'Failed to delete preset');
+                // Try to parse JSON, but handle HTML errors (404/500) gracefully
+                let errorMessage = 'Failed to delete preset';
+                try {
+                    const error = await response.json();
+                    errorMessage = error.error || errorMessage;
+                } catch (e) {
+                    const text = await response.text();
+                    console.error('Server returned non-JSON error:', text);
+                    errorMessage = `Server Error (${response.status}): Check console for details`;
+                }
+                throw new Error(errorMessage);
             }
             
             return await response.json();

@@ -51,61 +51,56 @@ export const getUsers = async (): Promise<User[]> => {
 };
 
 export const saveUser = async (user: User) => {
-    const users = await getUsers();
-    const existingIndex = users.findIndex(u => u.id === user.id);
-    
-    if (existingIndex >= 0) {
-        users[existingIndex] = user;
-    } else {
-        users.push(user);
-    }
-    
-    // Optimistic update
-    localStorage.setItem(USERS_KEY, JSON.stringify(users));
-    
+    // Send to server
     await fetch('/api/users', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(users)
+        body: JSON.stringify(user)
     });
+    
+    // Refresh cache
+    await getUsers();
 };
 
 export const deleteUser = async (id: string) => {
     if (id === 'admin') throw new Error("Cannot delete root admin");
-    const users = (await getUsers()).filter(u => u.id !== id);
     
-    localStorage.setItem(USERS_KEY, JSON.stringify(users));
-    
-    await fetch('/api/users', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(users)
+    await fetch(`/api/users/${id}`, {
+        method: 'DELETE'
     });
+    
+    // Refresh cache
+    await getUsers();
 };
 
 export const login = async (username: string, password: string): Promise<User | null> => {
-    // Ensure users are initialized
+    // Ensure users are initialized (creates default admin if needed)
     await initializeUsers();
     
-    let users = await getUsers();
-    
-    // If no users exist, create default admin
-    if (users.length === 0) {
-        const defaultAdmin = getDefaultAdmin();
-        await saveUser(defaultAdmin);
-        users = [defaultAdmin];
-    }
-    
     const passwordHash = await sha256(password);
-    // Case-insensitive username comparison
-    const user = users.find(u => u.username.toLowerCase() === username.toLowerCase() && u.password === passwordHash);
-    if (user) {
-        // Store session 
-        const sessionUser = { ...user };
-        delete sessionUser.password;
-        localStorage.setItem(CURRENT_USER_KEY, JSON.stringify(sessionUser));
-        return sessionUser;
+    
+    try {
+        const response = await fetch('/api/login', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ 
+                username, 
+                password: passwordHash 
+            })
+        });
+        
+        if (response.ok) {
+            const data = await response.json();
+            if (data.success && data.user) {
+                const sessionUser = data.user;
+                localStorage.setItem(CURRENT_USER_KEY, JSON.stringify(sessionUser));
+                return sessionUser;
+            }
+        }
+    } catch (e) {
+        console.error("Login failed", e);
     }
+    
     return null;
 };
 
@@ -123,4 +118,34 @@ export const isModelAllowed = (user: User, model: string): boolean => {
     if (user.role === 'admin') return true;
     if (user.allowedModels.includes('all')) return true;
     return user.allowedModels.includes(model);
+};
+
+// ============= USER PREFERENCES =============
+
+export const getUserPreferences = async (userId: string) => {
+    try {
+        const res = await fetch(`/api/user-preferences/${userId}`);
+        if (res.ok) {
+            return await res.json();
+        }
+    } catch (e) {
+        console.error('Failed to get user preferences', e);
+    }
+    return { language: 'en', theme: 'default' };
+};
+
+export const saveUserPreferences = async (userId: string, preferences: any) => {
+    try {
+        const res = await fetch(`/api/user-preferences/${userId}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(preferences)
+        });
+        if (res.ok) {
+            return await res.json();
+        }
+    } catch (e) {
+        console.error('Failed to save user preferences', e);
+    }
+    return null;
 };

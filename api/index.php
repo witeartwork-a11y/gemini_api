@@ -97,9 +97,44 @@ elseif ($method === 'GET' && $path === '/api/presets') {
 elseif ($method === 'POST' && $path === '/api/presets') {
     savePreset();
 }
-// Route: DELETE /api/presets/{name} - Delete preset (admin only)
+// Route: DELETE /api/presets - Delete preset (admin only)
+elseif ($method === 'DELETE' && $path === '/api/presets') {
+    // Check for name in query string first (preferred)
+    $name = $_GET['name'] ?? null;
+    if ($name) {
+        deletePreset($name);
+    } else {
+        http_response_code(400);
+        echo json_encode(['error' => 'Preset name required']);
+    }
+}
+// Route: DELETE /api/presets/{name} - Delete preset (admin only) [Legacy/Path fallback]
 elseif ($method === 'DELETE' && preg_match('#^/api/presets/(.+)$#', $path, $matches)) {
     deletePreset(urldecode($matches[1]));
+}
+// Route: GET /api/users - Get all users
+elseif ($method === 'GET' && $path === '/api/users') {
+    getUsers();
+}
+// Route: POST /api/users - Save user
+elseif ($method === 'POST' && $path === '/api/users') {
+    saveUser();
+}
+// Route: DELETE /api/users/{userId} - Delete user
+elseif ($method === 'DELETE' && preg_match('#^/api/users/([^/]+)$#', $path, $matches)) {
+    deleteUser($matches[1]);
+}
+// Route: GET /api/user-preferences/{userId} - Get user preferences
+elseif ($method === 'GET' && preg_match('#^/api/user-preferences/([^/]+)$#', $path, $matches)) {
+    getUserPreferences($matches[1]);
+}
+// Route: POST /api/user-preferences/{userId} - Save user preferences
+elseif ($method === 'POST' && preg_match('#^/api/user-preferences/([^/]+)$#', $path, $matches)) {
+    saveUserPreferences($matches[1]);
+}
+// Route: POST /api/login - Authenticate user
+elseif ($method === 'POST' && $path === '/api/login') {
+    loginUser();
 }
 else {
     http_response_code(404);
@@ -631,25 +666,8 @@ function getPresets() {
         $presets = json_decode(file_get_contents($presetsFile), true);
         echo json_encode($presets ?? []);
     } else {
-        // Return default presets on first load
-        $defaults = [
-            [
-                'name' => 'High Fidelity Restoration',
-                'content' => 'You are an expert AI specialized in High-Fidelity Image Restoration. Recreate the image with high details, removing blur and noise while preserving the original composition.'
-            ],
-            [
-                'name' => 'Creative Artistic Style',
-                'content' => 'Transform this image into a beautiful artistic style. Use vibrant colors and expressive brushstrokes while maintaining the core subject.'
-            ],
-            [
-                'name' => 'Photorealistic Enhancement',
-                'content' => 'Enhance this image to professional photorealistic quality. Focus on perfect lighting, sharp textures, and realistic shadows.'
-            ],
-            [
-                'name' => 'Anime Conversion',
-                'content' => 'Transform this image into a high-quality anime style illustration. Use crisp lines and cel-shaded aesthetic.'
-            ]
-        ];
+        // Return empty presets on first load
+        $defaults = [];
         
         // Save defaults to file
         file_put_contents($presetsFile, json_encode($defaults, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE));
@@ -729,7 +747,10 @@ function deletePreset($presetName) {
     $data = getJsonInput();
     
     // Check if user is admin
-    if (!isset($data['userId'])) {
+    // Fallback to GET param if body is empty (Server might strip DELETE body)
+    $userId = $data['userId'] ?? $_GET['userId'] ?? null;
+
+    if (!$userId) {
         http_response_code(401);
         echo json_encode(['error' => 'Authentication required']);
         return;
@@ -745,7 +766,7 @@ function deletePreset($presetName) {
     $users = json_decode(file_get_contents($usersFile), true);
     $isAdmin = false;
     foreach ($users as $user) {
-        if ($user['id'] === $data['userId'] && isset($user['isAdmin']) && $user['isAdmin']) {
+        if ($user['id'] === $userId && isset($user['isAdmin']) && $user['isAdmin']) {
             $isAdmin = true;
             break;
         }
@@ -775,4 +796,199 @@ function deletePreset($presetName) {
     // Save updated presets
     file_put_contents($presetsFile, json_encode($presets, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE));
     echo json_encode(['success' => true, 'presets' => $presets]);
+}
+
+// ============= USER MANAGEMENT FUNCTIONS =============
+
+function getUsers() {
+    $usersFile = DATA_DIR . '/users.json';
+    if (file_exists($usersFile)) {
+        $users = json_decode(file_get_contents($usersFile), true) ?? [];
+        // Don't send passwords to client
+        foreach ($users as &$user) {
+            unset($user['password']);
+        }
+        echo json_encode($users);
+    } else {
+        echo json_encode([]);
+    }
+}
+
+function saveUser() {
+    $data = getJsonInput();
+    
+    if (!isset($data['id']) || !isset($data['username'])) {
+        http_response_code(400);
+        echo json_encode(['error' => 'User ID and username required']);
+        return;
+    }
+    
+    $usersFile = DATA_DIR . '/users.json';
+    $users = [];
+    if (file_exists($usersFile)) {
+        $users = json_decode(file_get_contents($usersFile), true) ?? [];
+    }
+    
+    // Find and update or add new user
+    $found = false;
+    foreach ($users as &$user) {
+        if ($user['id'] === $data['id']) {
+            // Update existing user
+            $user['username'] = $data['username'];
+            if (isset($data['password'])) {
+                $user['password'] = $data['password'];
+            }
+            if (isset($data['role'])) {
+                $user['role'] = $data['role'];
+                $user['isAdmin'] = ($data['role'] === 'admin');
+            }
+            if (isset($data['allowedModels'])) {
+                $user['allowedModels'] = $data['allowedModels'];
+            }
+            if (isset($data['preferences'])) {
+                $user['preferences'] = $data['preferences'];
+            }
+            $found = true;
+            break;
+        }
+    }
+    
+    if (!$found) {
+        // Add new user
+        $newUser = [
+            'id' => $data['id'],
+            'username' => $data['username'],
+            'password' => $data['password'] ?? '',
+            'role' => $data['role'] ?? 'user',
+            'isAdmin' => ($data['role'] ?? 'user') === 'admin',
+            'allowedModels' => $data['allowedModels'] ?? ['all']
+        ];
+        if (isset($data['preferences'])) {
+            $newUser['preferences'] = $data['preferences'];
+        }
+        $users[] = $newUser;
+    }
+    
+    file_put_contents($usersFile, json_encode($users, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE));
+    echo json_encode(['success' => true]);
+}
+
+function deleteUser($userId) {
+    // Prevent deleting admin
+    if ($userId === 'admin') {
+        http_response_code(403);
+        echo json_encode(['error' => 'Cannot delete admin user']);
+        return;
+    }
+    
+    $usersFile = DATA_DIR . '/users.json';
+    if (!file_exists($usersFile)) {
+        http_response_code(404);
+        echo json_encode(['error' => 'Users file not found']);
+        return;
+    }
+    
+    $users = json_decode(file_get_contents($usersFile), true) ?? [];
+    $users = array_values(array_filter($users, function($user) use ($userId) {
+        return $user['id'] !== $userId;
+    }));
+    
+    file_put_contents($usersFile, json_encode($users, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE));
+    echo json_encode(['success' => true]);
+}
+
+function getUserPreferences($userId) {
+    $usersFile = DATA_DIR . '/users.json';
+    if (!file_exists($usersFile)) {
+        echo json_encode(['language' => 'en', 'theme' => 'default']);
+        return;
+    }
+    
+    $users = json_decode(file_get_contents($usersFile), true) ?? [];
+    foreach ($users as $user) {
+        if ($user['id'] === $userId) {
+            $preferences = $user['preferences'] ?? ['language' => 'en', 'theme' => 'default'];
+            echo json_encode($preferences);
+            return;
+        }
+    }
+    
+    // User not found, return defaults
+    echo json_encode(['language' => 'en', 'theme' => 'default']);
+}
+
+function saveUserPreferences($userId) {
+    $data = getJsonInput();
+    
+    $usersFile = DATA_DIR . '/users.json';
+    $users = [];
+    if (file_exists($usersFile)) {
+        $users = json_decode(file_get_contents($usersFile), true) ?? [];
+    }
+    
+    $found = false;
+    foreach ($users as &$user) {
+        if ($user['id'] === $userId) {
+            $user['preferences'] = $data;
+            $found = true;
+            break;
+        }
+    }
+    
+    if (!$found) {
+        http_response_code(404);
+        echo json_encode(['error' => 'User not found']);
+        return;
+    }
+    
+    file_put_contents($usersFile, json_encode($users, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE));
+    echo json_encode(['success' => true, 'preferences' => $data]);
+}
+
+function loginUser() {
+    $data = getJsonInput();
+    
+    if (!isset($data['username']) || !isset($data['password'])) {
+        http_response_code(400);
+        echo json_encode(['error' => 'Username and password required']);
+        return;
+    }
+    
+    $usersFile = DATA_DIR . '/users.json';
+    if (!file_exists($usersFile)) {
+        http_response_code(401);
+        echo json_encode(['error' => 'Invalid credentials']);
+        return;
+    }
+    
+    $users = json_decode(file_get_contents($usersFile), true) ?? [];
+    
+    $username = $data['username'];
+    $passwordHash = $data['password']; // Client sends SHA256 hash
+    
+    foreach ($users as $user) {
+        if (strcasecmp($user['username'], $username) === 0) {
+            // Compare hashes using hash_equals for timing-safe comparison
+            if (hash_equals($user['password'], $passwordHash)) {
+                // Success
+                $responseUser = [
+                    'id' => $user['id'],
+                    'username' => $user['username'],
+                    'role' => $user['role'],
+                    'allowedModels' => $user['allowedModels']
+                ];
+                echo json_encode(['success' => true, 'user' => $responseUser]);
+                return;
+            } else {
+                // Password mismatch for this user
+                http_response_code(401);
+                echo json_encode(['error' => 'Invalid credentials']);
+                return;
+            }
+        }
+    }
+    
+    // User not found
+    http_response_code(401);
+    echo json_encode(['error' => 'Invalid credentials']);
 }

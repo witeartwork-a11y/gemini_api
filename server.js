@@ -359,6 +359,47 @@ app.post('/api/users', async (req, res) => {
     }
 });
 
+// Login endpoint
+app.post('/api/login', async (req, res) => {
+    try {
+        const { username, password } = req.body;
+
+        if (!username || !password) {
+            return res.status(400).json({ error: 'Username and password required' });
+        }
+
+        if (!await fs.pathExists(USERS_FILE)) {
+            return res.status(401).json({ error: 'Invalid credentials' });
+        }
+
+        const users = await fs.readJson(USERS_FILE);
+
+        // Find user with matching username (case-insensitive)
+        const user = users.find(u => u.username.toLowerCase() === username.toLowerCase());
+
+        if (!user) {
+            return res.status(401).json({ error: 'Invalid credentials' });
+        }
+
+        // Compare password hash (client sends SHA256 hash)
+        if (user.password === password) {
+            // Success - return user without password hash
+            const responseUser = {
+                id: user.id,
+                username: user.username,
+                role: user.role,
+                allowedModels: user.allowedModels
+            };
+            return res.json({ success: true, user: responseUser });
+        } else {
+            return res.status(401).json({ error: 'Invalid credentials' });
+        }
+    } catch (e) {
+        console.error('Login error:', e);
+        res.status(500).json({ error: e.message });
+    }
+});
+
 // 6. System Settings Persistence
 const SETTINGS_FILE = path.join(DATA_DIR, 'system_settings.json');
 

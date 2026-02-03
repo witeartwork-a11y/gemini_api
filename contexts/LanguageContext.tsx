@@ -1,5 +1,6 @@
 
 import React, { createContext, useContext, useState, useEffect } from 'react';
+import { getCurrentUser, getUserPreferences, saveUserPreferences } from '../services/authService';
 
 type Language = 'en' | 'ru';
 
@@ -13,6 +14,8 @@ const translations = {
         nav_admin: "Admin",
         settings_title: "Settings",
         api_key_label: "Gemini API Key",
+        default_system_language: "Default System Language",
+        default_system_language_desc: "Default language for new visitors",
         save: "Save",
         cancel: "Cancel",
         gen_settings_title: "Settings",
@@ -167,6 +170,8 @@ const translations = {
         nav_admin: "Админка",
         settings_title: "Настройки",
         api_key_label: "API Ключ Gemini",
+        default_system_language: "Язык системы по умолчанию",
+        default_system_language_desc: "Язык по умолчанию для новых посетителей",
         save: "Сохранить",
         cancel: "Отмена",
         gen_settings_title: "Настройки",
@@ -327,30 +332,63 @@ export const LanguageProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     const [isLoaded, setIsLoaded] = useState(false);
 
     useEffect(() => {
-        // Load language preference from server or localStorage
+        // Load language preference from user account, server, localStorage, or cookies
         const loadLanguage = async () => {
+            const currentUser = getCurrentUser();
+            
+            // First check localStorage (fastest)
+            const storedLocal = localStorage.getItem('app_language') as Language;
+            if (storedLocal && (storedLocal === 'en' || storedLocal === 'ru')) {
+                setLanguage(storedLocal);
+            }
+            
+            // If user is logged in, load their personal preferences
+            if (currentUser) {
+                try {
+                    const prefs = await getUserPreferences(currentUser.id);
+                    if (prefs.language && (prefs.language === 'en' || prefs.language === 'ru')) {
+                        setLanguage(prefs.language);
+                        localStorage.setItem('app_language', prefs.language);
+                        document.cookie = `app_language=${prefs.language}; max-age=31536000; path=/`;
+                        setIsLoaded(true);
+                        return;
+                    }
+                } catch (e) {
+                    console.error('Failed to load user preferences', e);
+                }
+            }
+            
             try {
-                // Try to fetch from server first
+                // Then sync with server (system settings)
                 const res = await fetch('/api/system-settings');
                 if (res.ok) {
                     const settings = await res.json();
                     const serverLanguage = settings.language as Language;
-                    if (serverLanguage && (serverLanguage === 'en' || serverLanguage === 'ru')) {
+                    
+                    // Only overwrite if we didn't find a local preference OR if user isn't logged in (acting as guest using system defaults)
+                    // But wait, if they have a local cookie/storage preference, we should probably respect it even for guests?
+                    // Let's say priority: UserAccount > LocalStorage/Cookie > SystemSettings
+                    
+                    // If we already loaded from LocalStorage (storedLocal), don't overwrite with System Settings
+                    if (!storedLocal && serverLanguage && (serverLanguage === 'en' || serverLanguage === 'ru')) {
                         setLanguage(serverLanguage);
                         localStorage.setItem('app_language', serverLanguage);
-                        setIsLoaded(true);
-                        return;
+                        document.cookie = `app_language=${serverLanguage}; max-age=31536000; path=/`;
                     }
                 }
             } catch (e) {
-                // Fall back to localStorage
+                console.error('Failed to load language from server', e);
+                // Fall back to cookie if localStorage is empty
+                if (!storedLocal) {
+                    const cookieMatch = document.cookie.match(/app_language=(\w+)/);
+                    if (cookieMatch && (cookieMatch[1] === 'en' || cookieMatch[1] === 'ru')) {
+                        const cookieLang = cookieMatch[1] as Language;
+                        setLanguage(cookieLang);
+                        localStorage.setItem('app_language', cookieLang);
+                    }
+                }
             }
             
-            // Fall back to localStorage
-            const stored = localStorage.getItem('app_language') as Language;
-            if (stored && (stored === 'en' || stored === 'ru')) {
-                setLanguage(stored);
-            }
             setIsLoaded(true);
         };
 
@@ -360,13 +398,16 @@ export const LanguageProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     const handleSetLanguage = (lang: Language) => {
         setLanguage(lang);
         localStorage.setItem('app_language', lang);
+        // Also save to cookie for persistence after hard reload
+        document.cookie = `app_language=${lang}; max-age=31536000; path=/`;
         
-        // Save to server
-        fetch('/api/system-settings', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ language: lang })
-        }).catch(e => console.error('Failed to save language to server', e));
+        const currentUser = getCurrentUser();
+        
+        // Save to user preferences if logged in
+        if (currentUser) {
+            saveUserPreferences(currentUser.id, { language: lang })
+                .catch(e => console.error('Failed to save user language preference', e));
+        }
     };
 
     const t = (key: keyof typeof translations['en']) => {

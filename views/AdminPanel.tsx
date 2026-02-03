@@ -160,6 +160,13 @@ const AdminPanel: React.FC = () => {
         saveSystemSettings(newSettings);
     };
 
+    const handleSystemLanguageChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+        const newLang = e.target.value as 'en' | 'ru';
+        const newSettings = { ...systemSettings, language: newLang };
+        setSystemSettings(newSettings);
+        saveSystemSettings(newSettings);
+    };
+
     return (
         <div className="space-y-8 pb-10">
              {/* System Settings Section */}
@@ -169,6 +176,22 @@ const AdminPanel: React.FC = () => {
                     {t('system_ui_config')}
                 </h2>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                     {/* Default Language Setting */}
+                     <div className="bg-slate-900/50 p-4 rounded-xl border border-slate-700 flex justify-between items-center">
+                        <div>
+                            <div className="text-white font-bold">{t('default_system_language')}</div>
+                            <div className="text-xs text-slate-400">{t('default_system_language_desc')}</div>
+                        </div>
+                        <select 
+                            className="bg-slate-800 border-none rounded px-3 py-1 text-white text-sm outline-none cursor-pointer"
+                            value={systemSettings.language || 'en'}
+                            onChange={handleSystemLanguageChange}
+                        >
+                            <option value="en">English</option>
+                            <option value="ru">Русский</option>
+                        </select>
+                     </div>
+
                      <div className="bg-slate-900/50 p-4 rounded-xl border border-slate-700 flex justify-between items-center">
                         <div>
                             <div className="text-white font-bold">{t('show_creativity')}</div>

@@ -412,7 +412,7 @@ const SingleGenerator: React.FC = () => {
                             </div>
 
                             {uiSettings.showCreativity && (
-                                <div className="mt-4 p-4 bg-slate-800/30 rounded-xl border border-slate-700/30">
+                                <div className="p-4 bg-slate-800/30 rounded-xl border border-slate-700/30">
                                     <RangeInput 
                                         label={t('temp_label')}
                                         min="0" max="2" step="0.1" 
@@ -424,7 +424,7 @@ const SingleGenerator: React.FC = () => {
                             )}
 
                             {uiSettings.showRepeats && (
-                                <div className="mt-4">
+                                <div>
                                     <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2 ml-1">
                                         {t('repeat_count')}
                                     </label>
@@ -437,82 +437,85 @@ const SingleGenerator: React.FC = () => {
                                     />
                                 </div>
                             )}
+
+                             {/* Input Photos (Moved from Right Panel) */}
+                             <div 
+                                className={`
+                                    p-4 bg-slate-800/30 rounded-xl border transition-all duration-300 min-h-[120px]
+                                    ${isDraggingOverGallery ? 'border-theme-primary bg-theme-primary/10 scale-[1.01]' : 'border-slate-700/30'}
+                                `}
+                                onDragOver={handleDragOver}
+                                onDragLeave={handleDragLeave}
+                                onDrop={handleDrop}
+                            >
+                                <div className="flex justify-between items-center mb-4">
+                                    <h2 className="text-sm font-bold flex items-center gap-2 text-white">
+                                        <i className="fas fa-images text-theme-secondary"></i>
+                                        {t('input_image_title')}
+                                    </h2>
+                                    <span className="text-xs font-medium px-2 py-1 bg-slate-800 rounded-lg text-slate-300 border border-slate-700">
+                                        {images.length} / 14
+                                    </span>
+                                </div>
+                                
+                                {images.length === 0 ? (
+                                    <FileUploader onFilesSelected={handleImageSelect} multiple={true} className="h-32 p-4" />
+                                ) : (
+                                    <div className="space-y-4">
+                                        <div className="flex flex-wrap gap-3 max-h-48 overflow-y-auto p-3 custom-scrollbar">
+                                            {images.map((img) => (
+                                                <div 
+                                                    key={img.id} 
+                                                    className="relative group w-20 h-20 shrink-0"
+                                                >
+                                                    {/* Image Container */}
+                                                    <div className="w-full h-full rounded-xl overflow-hidden border border-slate-600 shadow-sm">
+                                                        <img src={img.preview} className="w-full h-full object-cover" alt="Input" />
+                                                    </div>
+                                                    
+                                                    {/* Delete Button Overlay */}
+                                                    <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity duration-200 z-50 bg-black/20 rounded-xl pointer-events-none">
+                                                        <button 
+                                                            onClick={() => removeImage(img.id)}
+                                                            className="pointer-events-auto w-6 h-6 rounded-full bg-red-500 text-white flex items-center justify-center shadow-lg hover:scale-110 transition-transform cursor-pointer hover:bg-red-600"
+                                                            title={t('remove_btn')}
+                                                        >
+                                                            <i className="fas fa-times text-xs"></i>
+                                                        </button>
+                                                    </div>
+                                                </div>
+                                            ))}
+                                            {images.length < 14 && (
+                                                 <div 
+                                                    className="w-20 h-20 border-2 border-dashed border-slate-700 rounded-xl flex items-center justify-center cursor-pointer hover:border-slate-500 hover:bg-slate-800/50 transition-colors shrink-0"
+                                                    onClick={() => document.getElementById('add-more-input')?.click()}
+                                                 >
+                                                    <i className="fas fa-plus text-slate-500"></i>
+                                                    <input 
+                                                        id="add-more-input"
+                                                        type="file" 
+                                                        className="hidden" 
+                                                        multiple 
+                                                        accept="image/*"
+                                                        onChange={(e) => e.target.files && handleImageSelect(Array.from(e.target.files))}
+                                                    />
+                                                 </div>
+                                            )}
+                                        </div>
+                                        <div className="flex justify-end">
+                                            <button onClick={() => setImages([])} className="text-red-400 text-[10px] hover:text-red-300 transition-colors flex items-center gap-1">
+                                                <i className="fas fa-trash"></i> {t('remove_btn')}
+                                            </button>
+                                        </div>
+                                    </div>
+                                )}
+                            </div>
                         </div>
                     </div>
                 </div>
 
-                <div className="xl:col-span-8 space-y-6 flex flex-col h-full">
-                     <div 
-                        className={`
-                            bg-slate-900/60 backdrop-blur-md p-6 rounded-3xl border transition-all duration-300 min-h-[160px]
-                            ${isDraggingOverGallery ? 'border-theme-primary bg-theme-primary/10 scale-[1.01]' : 'border-slate-700/50'}
-                        `}
-                        onDragOver={handleDragOver}
-                        onDragLeave={handleDragLeave}
-                        onDrop={handleDrop}
-                    >
-                        <div className="flex justify-between items-center mb-4">
-                            <h2 className="text-lg font-bold flex items-center gap-2 text-white">
-                                <i className="fas fa-images text-theme-secondary"></i>
-                                {t('input_image_title')}
-                            </h2>
-                            <span className="text-xs font-medium px-2 py-1 bg-slate-800 rounded-lg text-slate-300 border border-slate-700">
-                                {images.length} / 14
-                            </span>
-                        </div>
-                        
-                        {images.length === 0 ? (
-                            <FileUploader onFilesSelected={handleImageSelect} multiple={true} className="h-32 p-4" />
-                        ) : (
-                            <div className="space-y-4">
-                                <div className="flex flex-wrap gap-3 max-h-48 overflow-y-auto p-3 custom-scrollbar">
-                                    {images.map((img) => (
-                                        <div 
-                                            key={img.id} 
-                                            className="relative group w-24 h-24 shrink-0"
-                                        >
-                                            {/* Image Container */}
-                                            <div className="w-full h-full rounded-xl overflow-hidden border border-slate-600 shadow-sm">
-                                                <img src={img.preview} className="w-full h-full object-cover" alt="Input" />
-                                            </div>
-                                            
-                                            {/* Delete Button Overlay - Centered with Flexbox for full cross-browser support */}
-                                            <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity duration-200 z-50 bg-black/20 rounded-xl pointer-events-none">
-                                                <button 
-                                                    onClick={() => removeImage(img.id)}
-                                                    className="pointer-events-auto w-8 h-8 rounded-full bg-red-500 text-white flex items-center justify-center shadow-lg hover:scale-110 transition-transform cursor-pointer hover:bg-red-600"
-                                                    title={t('remove_btn')}
-                                                >
-                                                    <i className="fas fa-times"></i>
-                                                </button>
-                                            </div>
-                                        </div>
-                                    ))}
-                                    {images.length < 14 && (
-                                         <div 
-                                            className="w-24 h-24 border-2 border-dashed border-slate-700 rounded-xl flex items-center justify-center cursor-pointer hover:border-slate-500 hover:bg-slate-800/50 transition-colors shrink-0"
-                                            onClick={() => document.getElementById('add-more-input')?.click()}
-                                         >
-                                            <i className="fas fa-plus text-slate-500"></i>
-                                            <input 
-                                                id="add-more-input"
-                                                type="file" 
-                                                className="hidden" 
-                                                multiple 
-                                                accept="image/*"
-                                                onChange={(e) => e.target.files && handleImageSelect(Array.from(e.target.files))}
-                                            />
-                                         </div>
-                                    )}
-                                </div>
-                                <div className="flex justify-end">
-                                    <button onClick={() => setImages([])} className="text-red-400 text-xs hover:text-red-300 transition-colors flex items-center gap-1">
-                                        <i className="fas fa-trash"></i> {t('remove_btn')}
-                                    </button>
-                                </div>
-                            </div>
-                        )}
-                    </div>
+                <div className="xl:col-span-8 space-y-6 flex flex-col h-[calc(100vh-140px)]">
+
 
                     <div className="flex-1 bg-slate-900/60 backdrop-blur-md p-2 rounded-3xl border border-slate-700/50 min-h-[500px] flex flex-col shadow-2xl relative overflow-hidden">
                         <div className="absolute top-0 right-0 w-64 h-64 bg-theme-secondary/5 blur-[100px] rounded-full pointer-events-none"></div>
