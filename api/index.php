@@ -73,6 +73,14 @@ elseif ($method === 'GET' && preg_match('#^/api/settings/([^/]+)$#', $path, $mat
 elseif ($method === 'POST' && preg_match('#^/api/settings/([^/]+)$#', $path, $matches)) {
     saveSettings($matches[1]);
 }
+// Route: GET /api/cloud-jobs/{userId}
+elseif ($method === 'GET' && preg_match('#^/api/cloud-jobs/([^/]+)$#', $path, $matches)) {
+    getCloudJobs($matches[1]);
+}
+// Route: POST /api/cloud-jobs/{userId}
+elseif ($method === 'POST' && preg_match('#^/api/cloud-jobs/([^/]+)$#', $path, $matches)) {
+    saveCloudJobs($matches[1]);
+}
 // Route: GET /api/key
 elseif ($method === 'GET' && $path === '/api/key') {
     getOrGenerateApiKey();
@@ -550,6 +558,43 @@ function saveSettings($userId) {
         $settingsFile = $userDir . '/settings.json';
         file_put_contents($settingsFile, json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
         
+        echo json_encode(['success' => true]);
+    } catch (Exception $e) {
+        http_response_code(500);
+        echo json_encode(['error' => $e->getMessage()]);
+    }
+}
+
+function getCloudJobs($userId) {
+    try {
+        $userDir = DATA_DIR . '/' . $userId;
+        $jobsFile = $userDir . '/cloud_jobs.json';
+
+        if (file_exists($jobsFile)) {
+            $jobs = json_decode(file_get_contents($jobsFile), true) ?? [];
+            echo json_encode($jobs);
+        } else {
+            echo json_encode([]);
+        }
+    } catch (Exception $e) {
+        http_response_code(500);
+        echo json_encode(['error' => $e->getMessage()]);
+    }
+}
+
+function saveCloudJobs($userId) {
+    try {
+        $data = getJsonInput();
+        $userDir = DATA_DIR . '/' . $userId;
+
+        if (!is_dir($userDir)) {
+            mkdir($userDir, 0755, true);
+        }
+
+        $jobsFile = $userDir . '/cloud_jobs.json';
+        $payload = is_array($data) ? $data : [];
+        file_put_contents($jobsFile, json_encode($payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+
         echo json_encode(['success' => true]);
     } catch (Exception $e) {
         http_response_code(500);

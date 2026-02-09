@@ -72,6 +72,7 @@ const CloudBatchProcessor: React.FC = () => {
     const [isUploading, setIsUploading] = useState(false);
     const [isDownloading, setIsDownloading] = useState(false);
     const [jobs, setJobs] = useState<CloudBatchJob[]>([]);
+    const [isJobsLoaded, setIsJobsLoaded] = useState(false);
     
     // Pagination State
     const [currentPage, setCurrentPage] = useState(1);
@@ -105,6 +106,7 @@ const CloudBatchProcessor: React.FC = () => {
                     });
                     
                     setJobs(validJobs);
+                    setIsJobsLoaded(true);
                 }
             } catch (e) {
                 console.error("Failed to load cloud jobs from server", e);
@@ -116,7 +118,7 @@ const CloudBatchProcessor: React.FC = () => {
 
     // Save state to server
     useEffect(() => {
-        if (!user || jobs.length === 0) return;
+        if (!user || (!isJobsLoaded && jobs.length === 0)) return;
         
         const saveJobs = async () => {
             try {
