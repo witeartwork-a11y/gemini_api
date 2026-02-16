@@ -5,6 +5,7 @@ import Button from '../components/ui/Button';
 import FileUploader from '../components/ui/FileUploader';
 import ImageViewer from '../components/ui/ImageViewer';
 import CompareViewer from '../components/ui/CompareViewer';
+import NumberStepper from '../components/ui/NumberStepper';
 import { generateContent, downloadBase64Image, fileToText } from '../services/geminiService';
 import { ProcessingConfig, ModelType, BatchFile, BatchTextGroup } from '../types';
 import { MODELS, RESOLUTIONS, ASPECT_RATIOS, MODEL_PRICING } from '../constants';
@@ -454,13 +455,15 @@ const BatchProcessor: React.FC = () => {
                          {mode === 'text' && (
                              <div>
                                 <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2 ml-1">Files per Request</label>
-                                <input 
-                                    type="number" 
-                                    min="1" 
-                                    max="50"
+                                <NumberStepper
                                     value={filesPerRequest}
-                                    onChange={(e) => setFilesPerRequest(Math.max(1, parseInt(e.target.value) || 1))}
-                                    className="w-full bg-slate-800/50 border border-slate-700/50 text-white rounded-xl px-4 py-3 focus:ring-2 focus:ring-blue-500/50 outline-none"
+                                    onChange={setFilesPerRequest}
+                                    min={1}
+                                    max={50}
+                                    inputClassName="bg-slate-800/50 border-slate-700/50 text-white focus:ring-blue-500/50"
+                                    buttonClassName="bg-slate-800/50 border-slate-700/50 hover:bg-slate-700/60"
+                                    decreaseAriaLabel="Decrease files per request"
+                                    increaseAriaLabel="Increase files per request"
                                 />
                                 <p className="text-[10px] text-slate-500 mt-1 ml-1">Example: 2 files merged into 1 prompt.</p>
                              </div>
@@ -647,7 +650,14 @@ const BatchProcessor: React.FC = () => {
                                     <div className="flex justify-between items-center text-[10px] text-slate-500 font-medium uppercase tracking-wide">
                                         <span>Processed</span>
                                         {item.resultImage && (
-                                            <button onClick={() => item.resultImage && downloadBase64Image(item.resultImage, `batch-${item.file.name}`)} className="text-blue-400 hover:text-blue-300 flex items-center gap-1 transition-colors"><i className="fas fa-download"></i> Save</button>
+                                            <button onClick={() => item.resultImage && downloadBase64Image(item.resultImage, `batch-${item.file.name}`, {
+                                                prompt: config.userPrompt,
+                                                model: config.model,
+                                                resolution: config.resolution,
+                                                aspectRatio: config.aspectRatio,
+                                                inputImagesCount: 1,
+                                                createdAt: Date.now()
+                                            })} className="text-blue-400 hover:text-blue-300 flex items-center gap-1 transition-colors"><i className="fas fa-download"></i> Save</button>
                                         )}
                                     </div>
                                 </div>

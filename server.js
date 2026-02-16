@@ -5,6 +5,7 @@ import bodyParser from 'body-parser';
 import fs from 'fs-extra';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import crypto from 'crypto';
 
 // Emulate __dirname for ES Modules
 const __filename = fileURLToPath(import.meta.url);
@@ -113,7 +114,7 @@ app.get(/^\/api\/files\/([^\/]+)\/(.*)$/, (req, res) => {
 // 1. Save Generation
 app.post('/api/save', async (req, res) => {
     try {
-        const { userId, type, model, prompt, image, text, aspectRatio, timestamp, usageMetadata, estimatedCost, inputImageInfo, outputResolution } = req.body;
+        const { userId, type, model, prompt, image, text, aspectRatio, timestamp, usageMetadata, estimatedCost, inputImageInfo, outputResolution, authorName, workId } = req.body;
         
         if (!userId) return res.status(400).json({ error: 'User ID required' });
 
@@ -129,25 +130,52 @@ app.post('/api/save', async (req, res) => {
         await fs.ensureDir(imagesDir);
         await fs.ensureDir(logsDir);
 
+        const safeTimestamp = Number(timestamp) || Date.now();
         const id = Math.random().toString(36).substring(2, 9);
-        const baseFilename = `${timestamp}_${id}`;
+        const baseFilename = `${safeTimestamp}_${id}`;
         
         let imageFilename = null;
+        let imageSha256 = null;
 
         // 1. Save Image File (Clean .png only in images folder)
         if (image) {
             const base64Data = image.replace(/^data:image\/\w+;base64,/, "");
             const buffer = Buffer.from(base64Data, 'base64');
+            imageSha256 = crypto.createHash('sha256').update(buffer).digest('hex');
             imageFilename = `${baseFilename}.png`;
             await fs.writeFile(path.join(imagesDir, imageFilename), buffer);
         }
+
+        const promptHash = prompt
+            ? crypto.createHash('sha256').update(String(prompt), 'utf8').digest('hex')
+            : null;
+
+        const provenance = {
+            schema: 'wite.provenance.v1',
+            workId: workId || `${safeTimestamp}_${id}`,
+            createdAtUtc: new Date(safeTimestamp).toISOString(),
+            recordedAtUtc: new Date().toISOString(),
+            authorId: userId,
+            authorName: authorName || null,
+            model,
+            outputResolution: outputResolution || null,
+            aspectRatio: aspectRatio || null,
+            inputImagesCount: inputImageInfo?.count ?? null,
+            imageSha256,
+            promptHash,
+            app: 'gemini_api'
+        };
+        const provenanceDigest = crypto
+            .createHash('sha256')
+            .update(JSON.stringify(provenance), 'utf8')
+            .digest('hex');
 
         // 2. Save Metadata File (One JSON per generation)
         const logFilePath = path.join(logsDir, `${baseFilename}.json`);
         
         const metaEntry = {
             id,
-            timestamp,
+            timestamp: safeTimestamp,
             dateStr,
             userId,
             type, // 'single', 'batch', 'cloud'
@@ -160,7 +188,11 @@ app.post('/api/save', async (req, res) => {
             usageMetadata,
             estimatedCost,
             inputImageInfo,
-            outputResolution
+            outputResolution,
+            provenance: {
+                ...provenance,
+                recordDigest: provenanceDigest
+            }
         };
 
         await fs.writeJson(logFilePath, metaEntry, { spaces: 2 });

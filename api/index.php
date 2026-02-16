@@ -712,12 +712,25 @@ function handleExternalGallery() {
         return;
     }
 
+    $hiddenUsers = [];
+    $settingsFile = DATA_DIR . '/system_settings.json';
+    if (file_exists($settingsFile)) {
+        $settings = json_decode(file_get_contents($settingsFile), true) ?? [];
+        if (isset($settings['externalGalleryHiddenUsers']) && is_array($settings['externalGalleryHiddenUsers'])) {
+            $hiddenUsers = $settings['externalGalleryHiddenUsers'];
+        }
+    }
+
     $allItems = [];
     $users = array_filter(scandir(DATA_DIR), function($u) {
         return $u !== '.' && $u !== '..' && is_dir(DATA_DIR . '/' . $u);
     });
 
     foreach ($users as $userId) {
+        if (in_array($userId, $hiddenUsers, true)) {
+            continue;
+        }
+
         $logsDir = DATA_DIR . '/' . $userId . '/logs';
         if (!is_dir($logsDir)) continue;
 
@@ -762,7 +775,8 @@ function getSystemSettings() {
             'language' => 'en',
             'newYearMode' => false,
             'safetySettings' => [],
-            'mediaResolution' => 'HIGH'
+            'mediaResolution' => 'HIGH',
+            'externalGalleryHiddenUsers' => []
         ];
         echo json_encode($defaults);
     }

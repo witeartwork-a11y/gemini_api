@@ -12,6 +12,7 @@ export interface SystemSettings {
     safetySettings: SafetySetting[];
     mediaResolution: MediaResolution;
     apiProvider?: ApiProvider; // Google or NeuroAPI
+    externalGalleryHiddenUsers: string[];
 }
 
 const SETTINGS_KEY = 'wite_ai_system_settings';
@@ -62,6 +63,7 @@ export const getSystemSettings = (): SystemSettings => {
                 newYearMode: false,
                 safetySettings: DEFAULT_SAFETY,
                 mediaResolution: MediaResolution.HIGH, // Default to High
+                externalGalleryHiddenUsers: [],
                 ...parsed
             };
         } catch (e) {
@@ -78,7 +80,8 @@ export const getSystemSettings = (): SystemSettings => {
         newYearMode: false,
         safetySettings: DEFAULT_SAFETY,
         mediaResolution: MediaResolution.HIGH,
-        apiProvider: ApiProvider.GOOGLE // Default to Google
+        apiProvider: ApiProvider.GOOGLE, // Default to Google
+        externalGalleryHiddenUsers: []
     };
     
     // Check cookies for language and theme

@@ -3,6 +3,7 @@ import React, { useState, useEffect } from 'react';
 import { Select, TextArea } from '../components/ui/InputComponents';
 import Button from '../components/ui/Button';
 import FileUploader from '../components/ui/FileUploader';
+import NumberStepper from '../components/ui/NumberStepper';
 import { uploadFileToGemini, getBatchJobStatus, downloadBatchResults, cancelBatchJob, createBatchJobFromRequests, fileToText } from '../services/geminiService';
 import { ProcessingConfig, ModelType, CloudBatchJob } from '../types';
 import { MODELS, RESOLUTIONS, ASPECT_RATIOS } from '../constants';
@@ -919,13 +920,13 @@ const CloudBatchProcessor: React.FC = () => {
                                 <Select label={t('ar_label')} options={translatedAspectRatios} value={config.aspectRatio} onChange={e => setConfig({ ...config, aspectRatio: e.target.value })} />
                                 <div>
                                     <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2 ml-1">{t('generations_per_prompt_label')}</label>
-                                    <input
-                                        type="number"
-                                        min="1"
-                                        max="50"
+                                    <NumberStepper
                                         value={generationsPerPrompt}
-                                        onChange={(e) => setGenerationsPerPrompt(Math.min(50, Math.max(1, parseInt(e.target.value) || 1)))}
-                                        className="w-full bg-slate-800 border border-slate-700 text-slate-100 rounded-xl px-4 py-3 focus:outline-none focus:ring-2 focus:ring-blue-500/50 placeholder-slate-600"
+                                        onChange={setGenerationsPerPrompt}
+                                        min={1}
+                                        max={50}
+                                        decreaseAriaLabel="Decrease generations per prompt"
+                                        increaseAriaLabel="Increase generations per prompt"
                                     />
                                     <p className="text-[10px] text-slate-500 mt-1 ml-1">
                                         {formatText(t('generations_per_prompt_hint'), { count: generationsPerPrompt })}
@@ -937,13 +938,13 @@ const CloudBatchProcessor: React.FC = () => {
                         {mode === 'text' && (
                              <div>
                                 <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2 ml-1">{t('files_per_request_label')}</label>
-                                <input 
-                                    type="number" 
-                                    min="1" 
-                                    max="50"
+                                <NumberStepper
                                     value={filesPerRequest}
-                                    onChange={(e) => setFilesPerRequest(Math.max(1, parseInt(e.target.value) || 1))}
-                                    className="w-full bg-slate-800 border border-slate-700 text-slate-100 rounded-xl px-4 py-3 focus:outline-none focus:ring-2 focus:ring-blue-500/50 placeholder-slate-600"
+                                    onChange={setFilesPerRequest}
+                                    min={1}
+                                    max={50}
+                                    decreaseAriaLabel="Decrease files per request"
+                                    increaseAriaLabel="Increase files per request"
                                 />
                                 <p className="text-[10px] text-slate-500 mt-1 ml-1">{t('files_per_request_hint')}</p>
                              </div>

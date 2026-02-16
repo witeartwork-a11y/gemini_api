@@ -5,6 +5,7 @@ import Button from '../components/ui/Button';
 import FileUploader from '../components/ui/FileUploader';
 import ImageViewer from '../components/ui/ImageViewer';
 import TextViewer from '../components/ui/TextViewer';
+import NumberStepper from '../components/ui/NumberStepper';
 import { generateContent, downloadBase64Image, downloadTextFile, fileToBase64 } from '../services/geminiService';
 import { saveGeneration, getUserHistory, deleteGeneration } from '../services/historyService';
 import { getCurrentUser } from '../services/authService';
@@ -63,7 +64,7 @@ const SingleGenerator: React.FC = () => {
     const [isDraggingOverGallery, setIsDraggingOverGallery] = useState(false);
     const [viewingImage, setViewingImage] = useState<string | null>(null);
     const [viewingPrompt, setViewingPrompt] = useState<string | undefined>(undefined);
-    const [viewingMeta, setViewingMeta] = useState<{date?: number, resolution?: string, inputCount?: number} | null>(null);
+    const [viewingMeta, setViewingMeta] = useState<{date?: number, resolution?: string, inputCount?: number, provenance?: HistoryItem['provenance']} | null>(null);
     const [viewingText, setViewingText] = useState<{ text: string; prompt?: string; date?: number | string; title?: string } | null>(null);
     
     // Timer State
@@ -316,8 +317,14 @@ const SingleGenerator: React.FC = () => {
                     date={viewingMeta?.date}
                     resolution={viewingMeta?.resolution}
                     inputImagesCount={viewingMeta?.inputCount}
+                    provenance={viewingMeta?.provenance}
                     onClose={() => { setViewingImage(null); setViewingPrompt(undefined); setViewingMeta(null); }} 
-                    onDownload={() => viewingImage && downloadBase64Image(viewingImage, `image-${Date.now()}.png`)}
+                    onDownload={() => viewingImage && downloadBase64Image(viewingImage, `image-${Date.now()}.png`, {
+                        prompt: viewingPrompt,
+                        resolution: viewingMeta?.resolution,
+                        inputImagesCount: viewingMeta?.inputCount,
+                        createdAt: viewingMeta?.date
+                    })}
                 />
             )}
             {viewingText && (
@@ -437,12 +444,15 @@ const SingleGenerator: React.FC = () => {
                                     <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2 ml-1">
                                         {t('repeat_count')}
                                     </label>
-                                    <input 
-                                        type="number" 
-                                        min="1" max="50"
+                                    <NumberStepper
                                         value={repeatCount}
-                                        onChange={(e) => setRepeatCount(Math.max(1, parseInt(e.target.value) || 1))}
-                                        className="w-full bg-slate-800/50 border border-slate-700/50 text-white rounded-xl px-4 py-2.5 focus:ring-2 focus:ring-theme-primary outline-none"
+                                        onChange={setRepeatCount}
+                                        min={1}
+                                        max={50}
+                                        decreaseAriaLabel="Decrease repeats"
+                                        increaseAriaLabel="Increase repeats"
+                                        inputClassName="bg-slate-800/50 border-slate-700/50 text-white py-2.5 focus:ring-theme-primary focus:outline-none"
+                                        buttonClassName="bg-slate-800/50 border-slate-700/50 hover:bg-slate-700/60"
                                     />
                                 </div>
                             )}
@@ -555,7 +565,14 @@ const SingleGenerator: React.FC = () => {
                                     className="px-3 py-1.5 text-xs h-8 border-slate-600 bg-slate-800/80"
                                     onClick={() => {
                                         if (result?.image) {
-                                            downloadBase64Image(result.image, `gemini-gen-${Date.now()}.png`);
+                                            downloadBase64Image(result.image, `gemini-gen-${Date.now()}.png`, {
+                                                prompt: config.userPrompt,
+                                                model: config.model,
+                                                resolution: config.resolution,
+                                                aspectRatio: config.aspectRatio,
+                                                inputImagesCount: images.length,
+                                                createdAt: Date.now()
+                                            });
                                             return;
                                         }
                                         if (result?.text) {
@@ -682,7 +699,8 @@ const SingleGenerator: React.FC = () => {
                                                     setViewingMeta({
                                                         date: item.timestamp,
                                                         resolution: item.outputResolution,
-                                                        inputCount: item.inputImageInfo?.count
+                                                        inputCount: item.inputImageInfo?.count,
+                                                        provenance: item.provenance
                                                     });
                                                 }}
                                             />
@@ -720,7 +738,8 @@ const SingleGenerator: React.FC = () => {
                                                             setViewingMeta({
                                                                 date: item.timestamp,
                                                                 resolution: item.outputResolution,
-                                                                inputCount: item.inputImageInfo?.count
+                                                                inputCount: item.inputImageInfo?.count,
+                                                                provenance: item.provenance
                                                             });
                                                         }}
                                                         className="w-8 h-8 rounded-full bg-slate-700 text-white flex items-center justify-center hover:bg-slate-600 transition-colors"

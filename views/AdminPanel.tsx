@@ -111,6 +111,15 @@ const AdminPanel: React.FC = () => {
                 await deleteUser(id);
                 const updatedUsers = await getUsers();
                 setUsers(updatedUsers);
+
+                if ((systemSettings.externalGalleryHiddenUsers || []).includes(id)) {
+                    const newSettings = {
+                        ...systemSettings,
+                        externalGalleryHiddenUsers: (systemSettings.externalGalleryHiddenUsers || []).filter(uid => uid !== id)
+                    };
+                    setSystemSettings(newSettings);
+                    saveSystemSettings(newSettings);
+                }
             } catch (e: any) {
                 alert(e.message);
             }
@@ -181,6 +190,17 @@ const AdminPanel: React.FC = () => {
     const handleApiProviderChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
         const newProvider = e.target.value as ApiProvider;
         const newSettings = { ...systemSettings, apiProvider: newProvider };
+        setSystemSettings(newSettings);
+        saveSystemSettings(newSettings);
+    };
+
+    const handleToggleExternalGalleryUser = (userId: string) => {
+        const hiddenUsers = systemSettings.externalGalleryHiddenUsers || [];
+        const nextHiddenUsers = hiddenUsers.includes(userId)
+            ? hiddenUsers.filter(id => id !== userId)
+            : [...hiddenUsers, userId];
+
+        const newSettings = { ...systemSettings, externalGalleryHiddenUsers: nextHiddenUsers };
         setSystemSettings(newSettings);
         saveSystemSettings(newSettings);
     };
@@ -272,6 +292,41 @@ const AdminPanel: React.FC = () => {
                             <div className="w-11 h-6 bg-slate-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-emerald-600"></div>
                         </label>
                      </div>
+
+                     <div className="bg-slate-900/50 p-4 rounded-xl border border-slate-700 col-span-full">
+                        <div className="text-white font-bold">{t('external_gallery_user_visibility')}</div>
+                        <div className="text-xs text-slate-400 mb-3">{t('external_gallery_user_visibility_desc')}</div>
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-2 max-h-48 overflow-y-auto custom-scrollbar pr-1">
+                            {users.map((u) => {
+                                const isHidden = (systemSettings.externalGalleryHiddenUsers || []).includes(u.id);
+
+                                return (
+                                    <label key={u.id} className="flex items-center justify-between gap-3 bg-slate-800/70 border border-slate-700 rounded-lg p-3 cursor-pointer">
+                                        <div className="min-w-0">
+                                            <div className="text-sm text-white truncate">{u.username}</div>
+                                            <div className="text-xs text-slate-400 truncate">{u.id}</div>
+                                        </div>
+                                        <div className="flex items-center gap-2 shrink-0">
+                                            <span className={`text-xs ${isHidden ? 'text-amber-300' : 'text-emerald-300'}`}>
+                                                {isHidden ? t('hidden_in_external_gallery') : t('visible_in_external_gallery')}
+                                            </span>
+                                            <span className="relative inline-flex items-center">
+                                                <input
+                                                    type="checkbox"
+                                                    checked={isHidden}
+                                                    onChange={() => handleToggleExternalGalleryUser(u.id)}
+                                                    className="sr-only peer"
+                                                    aria-label={`${u.username} external gallery visibility`}
+                                                />
+                                                <span className="w-9 h-5 bg-slate-700 rounded-full border border-slate-600 peer-checked:bg-amber-500/70 peer-checked:border-amber-400/60 transition-colors"></span>
+                                                <span className="absolute left-0.5 top-0.5 h-4 w-4 rounded-full bg-white border border-slate-300 transition-transform peer-checked:translate-x-4"></span>
+                                            </span>
+                                        </div>
+                                    </label>
+                                );
+                            })}
+                        </div>
+                     </div>
                 </div>
              </div>
 
@@ -345,21 +400,31 @@ const AdminPanel: React.FC = () => {
                                 <label className="block text-sm text-slate-400 mb-2">{t('allowed_models')}</label>
                                 <div className="space-y-2 max-h-32 overflow-y-auto p-2 border border-slate-700 rounded custom-scrollbar">
                                     <label className="flex items-center gap-2 cursor-pointer">
-                                        <input 
-                                            type="checkbox" 
-                                            checked={allowedModels.length === 0 || allowedModels.includes('all')}
-                                            onChange={() => setAllowedModels([])}
-                                        />
+                                        <span className="relative inline-flex items-center">
+                                            <input 
+                                                type="checkbox" 
+                                                checked={allowedModels.length === 0 || allowedModels.includes('all')}
+                                                onChange={() => setAllowedModels([])}
+                                                className="sr-only peer"
+                                            />
+                                            <span className="h-4 w-4 rounded border border-slate-500 bg-slate-800/90 peer-checked:bg-emerald-500/30 peer-checked:border-emerald-400 transition-colors"></span>
+                                            <i className="fas fa-check absolute left-[2px] top-[2px] text-[10px] text-emerald-300 opacity-0 peer-checked:opacity-100 transition-opacity"></i>
+                                        </span>
                                         <span className="text-sm text-slate-300">{t('all_models')}</span>
                                     </label>
                                     {MODELS.map(m => (
                                         <label key={m.value} className="flex items-center gap-2 cursor-pointer">
-                                            <input 
-                                                type="checkbox" 
-                                                checked={allowedModels.includes(m.value)}
-                                                onChange={() => toggleModel(m.value)}
-                                                disabled={allowedModels.includes('all')} 
-                                            />
+                                            <span className={`relative inline-flex items-center ${allowedModels.includes('all') ? 'opacity-50' : ''}`}>
+                                                <input 
+                                                    type="checkbox" 
+                                                    checked={allowedModels.includes(m.value)}
+                                                    onChange={() => toggleModel(m.value)}
+                                                    disabled={allowedModels.includes('all')}
+                                                    className="sr-only peer"
+                                                />
+                                                <span className="h-4 w-4 rounded border border-slate-500 bg-slate-800/90 peer-checked:bg-emerald-500/30 peer-checked:border-emerald-400 transition-colors"></span>
+                                                <i className="fas fa-check absolute left-[2px] top-[2px] text-[10px] text-emerald-300 opacity-0 peer-checked:opacity-100 transition-opacity"></i>
+                                            </span>
                                             <span className="text-sm text-slate-300">{m.label}</span>
                                         </label>
                                     ))}

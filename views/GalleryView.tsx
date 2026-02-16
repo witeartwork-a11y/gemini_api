@@ -45,24 +45,39 @@ const GalleryView: React.FC = () => {
     const handleDownload = async (item: HistoryItem) => {
         const filename = `${item.dateStr}_${item.type}_${item.id}.png`;
         const textFilename = `${item.dateStr}_${item.type}_${item.id}.txt`;
+
+        const toDataUrl = (blob: Blob): Promise<string> => new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(reader.result as string);
+            reader.onerror = () => reject(new Error('Failed to convert image blob to data URL'));
+            reader.readAsDataURL(blob);
+        });
         
         if (item.imageUrl) {
             try {
                 const response = await fetch(item.imageUrl);
                 const blob = await response.blob();
-                const url = window.URL.createObjectURL(blob);
-                const link = document.createElement('a');
-                link.href = url;
-                link.download = filename;
-                document.body.appendChild(link);
-                link.click();
-                document.body.removeChild(link);
-                window.URL.revokeObjectURL(url);
+                const dataUrl = await toDataUrl(blob);
+                await downloadBase64Image(dataUrl, filename, {
+                    prompt: item.prompt,
+                    model: item.model,
+                    resolution: item.outputResolution,
+                    inputImagesCount: item.inputImageInfo?.count,
+                    createdAt: item.timestamp,
+                    authorId: item.userId
+                });
             } catch (e) {
                 console.error("Download failed", e);
             }
         } else if (item.image) {
-            downloadBase64Image(item.image, filename);
+            await downloadBase64Image(item.image, filename, {
+                prompt: item.prompt,
+                model: item.model,
+                resolution: item.outputResolution,
+                inputImagesCount: item.inputImageInfo?.count,
+                createdAt: item.timestamp,
+                authorId: item.userId
+            });
         } else if (item.resultText) {
             downloadTextFile(item.resultText, textFilename);
         }
@@ -107,7 +122,9 @@ const GalleryView: React.FC = () => {
                     src={viewingItem.imageUrl || viewingItem.image!} 
                     prompt={viewingItem.prompt}                    date={viewingItem.timestamp}
                     resolution={viewingItem.outputResolution}
-                    inputImagesCount={viewingItem.inputImageInfo?.count}                    onClose={() => setViewingItem(null)} 
+                    inputImagesCount={viewingItem.inputImageInfo?.count}
+                    provenance={viewingItem.provenance}
+                    onClose={() => setViewingItem(null)} 
                     onDownload={() => handleDownload(viewingItem)}
                 />
             )}
@@ -139,15 +156,18 @@ const GalleryView: React.FC = () => {
                     {/* Pagination Limit */}
                     <div className="flex items-center gap-2 bg-slate-900 rounded-lg p-1 border border-slate-700 px-3">
                         <span className="text-xs text-slate-500">Show:</span>
-                        <select 
-                            value={itemsPerPage}
-                            onChange={(e) => { setItemsPerPage(Number(e.target.value)); setCurrentPage(1); }}
-                            className="bg-transparent text-white text-sm outline-none border-none py-1 [&>option]:bg-slate-900"
-                        >
-                            <option value={20}>20</option>
-                            <option value={50}>50</option>
-                            <option value={100}>100</option>
-                        </select>
+                        <div className="relative">
+                            <select 
+                                value={itemsPerPage}
+                                onChange={(e) => { setItemsPerPage(Number(e.target.value)); setCurrentPage(1); }}
+                                className="appearance-none bg-slate-950/60 border border-slate-700 rounded-md text-white text-sm outline-none py-1 pl-2 pr-7 hover:border-slate-500 focus:border-blue-500 transition-colors [&>option]:bg-slate-900"
+                            >
+                                <option value={20}>20</option>
+                                <option value={50}>50</option>
+                                <option value={100}>100</option>
+                            </select>
+                            <i className="fas fa-chevron-down pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-[10px] text-slate-400"></i>
+                        </div>
                     </div>
 
                     {/* Type Filters */}
@@ -173,7 +193,7 @@ const GalleryView: React.FC = () => {
                         <i className={`fas fa-calendar-alt ${selectedDate ? 'text-blue-400' : 'text-slate-500'}`}></i>
                         <input 
                             type="date" 
-                            className="bg-transparent text-white text-sm outline-none border-none py-1 w-32"
+                            className="appearance-none bg-slate-950/60 border border-slate-700 rounded-md text-white text-sm outline-none py-1 px-2 w-36 hover:border-slate-500 focus:border-blue-500 transition-colors [color-scheme:dark]"
                             value={selectedDate}
                             onChange={handleDateChange}
                         />

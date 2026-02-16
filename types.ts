@@ -103,6 +103,22 @@ export interface HistoryItem {
         resolutions?: string[];
     };
     outputResolution?: string;
+    provenance?: {
+        schema: string;
+        workId: string;
+        createdAtUtc: string;
+        recordedAtUtc: string;
+        authorId: string;
+        authorName?: string | null;
+        model?: string;
+        outputResolution?: string | null;
+        aspectRatio?: string | null;
+        inputImagesCount?: number | null;
+        imageSha256?: string | null;
+        promptHash?: string | null;
+        app?: string;
+        recordDigest?: string;
+    };
 }
 
 export interface ChatMessage {

@@ -190,7 +190,10 @@ const ChatInterface: React.FC = () => {
                 <ImageViewer 
                     src={viewingImage} 
                     onClose={() => setViewingImage(null)} 
-                    onDownload={() => downloadBase64Image(viewingImage, 'chat-image.png')}
+                    onDownload={() => downloadBase64Image(viewingImage, 'chat-image.png', {
+                        model: selectedModel,
+                        createdAt: Date.now()
+                    })}
                 />
             )}
 
