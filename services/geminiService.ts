@@ -543,10 +543,7 @@ export const getBatchJobStatus = async (jobName: string) => {
     return await aiAny.batches.get({ name: name });
 };
 
-/**
- * Downloads the batch result JSONL content.
- */
-export const downloadBatchResults = async (jobNameOrFileUri: string) => {
+export const fetchBatchResultsResponse = async (jobNameOrFileUri: string): Promise<Response> => {
     const apiKey = getApiKey();
     const ai = new GoogleGenAI({ apiKey });
     const aiAny = ai as any;
@@ -556,7 +553,7 @@ export const downloadBatchResults = async (jobNameOrFileUri: string) => {
 
     if (jobNameOrFileUri.includes('batches/')) {
         const job = await aiAny.batches.get({ name: jobNameOrFileUri });
-        
+
         if (job.state !== 'JOB_STATE_SUCCEEDED') {
             throw new Error(`Job is not ready yet. Current state: ${job.state}`);
         }
@@ -564,11 +561,11 @@ export const downloadBatchResults = async (jobNameOrFileUri: string) => {
         if (job.dest && (job.dest.fileName || job.dest.file_name)) {
             fileName = job.dest.fileName || job.dest.file_name;
         } else if (job.outputUri) {
-             fileName = job.outputUri;
+            fileName = job.outputUri;
         } else {
             const id = jobNameOrFileUri.split('/').pop();
             fileName = `files/batch-${id}`;
-            preferDownloadSuffix = true; 
+            preferDownloadSuffix = true;
         }
     } else {
         const match = jobNameOrFileUri.match(/(files\/[a-zA-Z0-9\-_]+)/);
@@ -582,28 +579,36 @@ export const downloadBatchResults = async (jobNameOrFileUri: string) => {
 
     const baseUrl = `https://generativelanguage.googleapis.com/v1beta/${fileName}`;
     let url = `${baseUrl}?key=${apiKey}&alt=media`;
-    
+
     if (preferDownloadSuffix) {
         url = `${baseUrl}:download?key=${apiKey}&alt=media`;
     }
-    
-    try {
-        let response = await fetch(url);
-        
-        if (!response.ok) {
-            if (preferDownloadSuffix) {
-                url = `${baseUrl}?key=${apiKey}&alt=media`;
-            } else {
-                url = `${baseUrl}:download?key=${apiKey}&alt=media`;
-            }
-            response = await fetch(url);
-        }
 
-        if (!response.ok) {
-            const errText = await response.text();
-            throw new Error(`Download failed (${response.status}): ${errText}`);
+    let response = await fetch(url);
+
+    if (!response.ok) {
+        if (preferDownloadSuffix) {
+            url = `${baseUrl}?key=${apiKey}&alt=media`;
+        } else {
+            url = `${baseUrl}:download?key=${apiKey}&alt=media`;
         }
-        
+        response = await fetch(url);
+    }
+
+    if (!response.ok) {
+        const errText = await response.text();
+        throw new Error(`Download failed (${response.status}): ${errText}`);
+    }
+
+    return response;
+};
+
+/**
+ * Downloads the batch result JSONL content.
+ */
+export const downloadBatchResults = async (jobNameOrFileUri: string) => {
+    try {
+        const response = await fetchBatchResultsResponse(jobNameOrFileUri);
         return await response.text();
     } catch (error: any) {
         console.error("Download failed:", error);

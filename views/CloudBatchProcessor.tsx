@@ -1,10 +1,10 @@
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Select, TextArea } from '../components/ui/InputComponents';
 import Button from '../components/ui/Button';
 import FileUploader from '../components/ui/FileUploader';
 import NumberStepper from '../components/ui/NumberStepper';
-import { uploadFileToGemini, getBatchJobStatus, downloadBatchResults, cancelBatchJob, createBatchJobFromRequests, fileToText } from '../services/geminiService';
+import { uploadFileToGemini, getBatchJobStatus, fetchBatchResultsResponse, cancelBatchJob, createBatchJobFromRequests, fileToText } from '../services/geminiService';
 import { ProcessingConfig, ModelType, CloudBatchJob } from '../types';
 import { MODELS, RESOLUTIONS, ASPECT_RATIOS } from '../constants';
 import { useLanguage } from '../contexts/LanguageContext';
@@ -22,6 +22,7 @@ interface ImageAsset {
 }
 
 interface ExtractedItem {
+    id: string;
     name: string;
     type: 'image' | 'text';
     data: string; // Base64 for image, plain string for text
@@ -29,10 +30,12 @@ interface ExtractedItem {
 }
 
 const BATCH_SIZE_LIMIT = 20;
+const BATCH_SIZE_LIMIT_STREAMED = 100;
 const ITEMS_PER_PAGE = 20;
 const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
 
 type BatchMode = 'image' | 'text';
+type CloudProcessingMode = 'classic' | 'streamed';
 
 const CloudBatchProcessor: React.FC = () => {
     const { t } = useLanguage();
@@ -81,6 +84,7 @@ const CloudBatchProcessor: React.FC = () => {
     const user = getCurrentUser();
 
     const [mode, setMode] = useState<BatchMode>('image');
+    const [processingMode, setProcessingMode] = useState<CloudProcessingMode>('streamed');
 
     const [config, setConfig] = useState<ProcessingConfig>({
         model: ModelType.GEMINI_3_PRO_IMAGE, 
@@ -113,9 +117,201 @@ const CloudBatchProcessor: React.FC = () => {
     const [downloadProgress, setDownloadProgress] = useState<string>("");
     
     // Preview Modal State
+    const [isPreviewOpen, setIsPreviewOpen] = useState(false);
     const [previewItems, setPreviewItems] = useState<ExtractedItem[] | null>(null);
     const [activePreviewJob, setActivePreviewJob] = useState<CloudBatchJob | null>(null);
+    const [previewTotalItems, setPreviewTotalItems] = useState(0);
+    const [isPreviewStreaming, setIsPreviewStreaming] = useState(false);
+    const [previewSourceUri, setPreviewSourceUri] = useState<string | null>(null);
+    const [previewError, setPreviewError] = useState<string | null>(null);
+    const [previewUsesStreamedMode, setPreviewUsesStreamedMode] = useState(false);
+    const [excludedPreviewItemIds, setExcludedPreviewItemIds] = useState<Set<string>>(new Set());
+    const streamedItemsRef = useRef<ExtractedItem[]>([]);
     const [isSavingToGallery, setIsSavingToGallery] = useState(false);
+
+    const extractItemsFromResponseLine = (line: string, index: number): ExtractedItem[] => {
+        if (!line.trim()) return [];
+
+        try {
+            const json = JSON.parse(line);
+            const candidates = json.response?.candidates || [];
+
+            let idName = `result_${index + 1}`;
+            if (json.custom_id) {
+                idName = json.custom_id.replace(/_DOT_/g, '.');
+            }
+
+            if (candidates.length === 0) return [];
+
+            const parts = candidates[0].content?.parts || [];
+            const parsedItems: ExtractedItem[] = [];
+            let hasImage = false;
+
+            for (const part of parts) {
+                const inlineData = part.inlineData || part.inline_data;
+                if (inlineData && inlineData.data) {
+                    hasImage = true;
+                    const data = inlineData.data;
+                    const mimeType = inlineData.mimeType || inlineData.mime_type || 'image/png';
+
+                    let ext = 'png';
+                    if (mimeType.includes('jpeg') || mimeType.includes('jpg')) ext = 'jpg';
+
+                    let fileName = idName;
+                    if (!fileName.toLowerCase().endsWith(`.${ext}`)) {
+                        fileName = `${fileName}.${ext}`;
+                    }
+
+                    parsedItems.push({
+                        id: `${idName}__img__${parsedItems.length}`,
+                        name: fileName,
+                        type: 'image',
+                        data,
+                        mimeType
+                    });
+                }
+            }
+
+            if (!hasImage) {
+                let textContent = '';
+                for (const part of parts) {
+                    if (part.text) textContent += part.text;
+                }
+
+                if (textContent) {
+                    let fileName = idName;
+                    if (!fileName.toLowerCase().endsWith('.txt')) {
+                        fileName = `${fileName}.txt`;
+                    }
+
+                    parsedItems.push({
+                        id: `${idName}__txt`,
+                        name: fileName,
+                        type: 'text',
+                        data: textContent
+                    });
+                }
+            }
+
+            return parsedItems;
+        } catch (error) {
+            console.error("Error parsing response line", error);
+            return [];
+        }
+    };
+
+    const closePreviewModal = () => {
+        setIsPreviewOpen(false);
+        setPreviewItems(null);
+        setActivePreviewJob(null);
+        setPreviewTotalItems(0);
+        setPreviewSourceUri(null);
+        setPreviewError(null);
+        setIsPreviewStreaming(false);
+        setPreviewUsesStreamedMode(false);
+        setExcludedPreviewItemIds(new Set());
+        streamedItemsRef.current = [];
+    };
+
+    const toggleExcludePreviewItem = (itemId: string) => {
+        setExcludedPreviewItemIds(prev => {
+            const next = new Set(prev);
+            if (next.has(itemId)) {
+                next.delete(itemId);
+            } else {
+                next.add(itemId);
+            }
+            return next;
+        });
+    };
+
+    const iterateBatchResultItems = async (
+        sourceUri: string,
+        onItems?: (items: ExtractedItem[], parsedCount: number) => Promise<void> | void,
+    ): Promise<ExtractedItem[]> => {
+        const response = await fetchBatchResultsResponse(sourceUri);
+        const contentType = (response.headers.get('content-type') || '').toLowerCase();
+        if (contentType.includes('text/html')) {
+            throw new Error(t('cloud_html_instead_json'));
+        }
+
+        const allItems: ExtractedItem[] = [];
+        const reader = response.body?.getReader();
+
+        if (!reader) {
+            const textContent = await response.text();
+            const lines = textContent.split('\n');
+            for (let index = 0; index < lines.length; index++) {
+                const line = lines[index];
+                const parsedItems = extractItemsFromResponseLine(line, index);
+                if (parsedItems.length > 0) {
+                    allItems.push(...parsedItems);
+                    await onItems?.(parsedItems, allItems.length);
+                }
+            }
+            return allItems;
+        }
+
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let lineIndex = 0;
+
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || '';
+
+            for (const line of lines) {
+                const parsedItems = extractItemsFromResponseLine(line, lineIndex);
+                lineIndex++;
+
+                if (parsedItems.length > 0) {
+                    allItems.push(...parsedItems);
+                    await onItems?.(parsedItems, allItems.length);
+                }
+            }
+        }
+
+        if (buffer.trim()) {
+            const parsedItems = extractItemsFromResponseLine(buffer, lineIndex);
+            if (parsedItems.length > 0) {
+                allItems.push(...parsedItems);
+                await onItems?.(parsedItems, allItems.length);
+            }
+        }
+
+        return allItems;
+    };
+
+    const loadPreviewItemsStreamed = async (sourceUri: string) => {
+        if (!sourceUri) return;
+
+        setIsPreviewStreaming(true);
+        setPreviewError(null);
+        streamedItemsRef.current = [];
+        setPreviewItems([]);
+        setPreviewTotalItems(0);
+        setDownloadProgress(t('cloud_fetching_data'));
+
+        try {
+            await iterateBatchResultItems(sourceUri, (parsedItems, parsedCount) => {
+                streamedItemsRef.current = [...streamedItemsRef.current, ...parsedItems];
+                setPreviewItems([...streamedItemsRef.current]);
+                setPreviewTotalItems(parsedCount);
+                setDownloadProgress(formatText(t('cloud_parsing_items'), { count: parsedCount }));
+            });
+
+            setDownloadProgress('');
+        } catch (error: any) {
+            setPreviewError(error.message || 'Failed to load preview page');
+            setDownloadProgress('');
+        } finally {
+            setIsPreviewStreaming(false);
+        }
+    };
 
     useEffect(() => {
         if (!user) return;
@@ -418,9 +614,11 @@ const CloudBatchProcessor: React.FC = () => {
                     });
                 }
 
-                for (let i = 0; i < imageRequests.length; i += BATCH_SIZE_LIMIT) {
-                    const reqChunk = imageRequests.slice(i, i + BATCH_SIZE_LIMIT);
-                    const chunkIndex = Math.floor(i / BATCH_SIZE_LIMIT) + 1;
+                const imageChunkSize = processingMode === 'streamed' ? BATCH_SIZE_LIMIT_STREAMED : BATCH_SIZE_LIMIT;
+
+                for (let i = 0; i < imageRequests.length; i += imageChunkSize) {
+                    const reqChunk = imageRequests.slice(i, i + imageChunkSize);
+                    const chunkIndex = Math.floor(i / imageChunkSize) + 1;
                     const startIndex = i + 1;
                     const endIndex = i + reqChunk.length;
 
@@ -606,99 +804,22 @@ const CloudBatchProcessor: React.FC = () => {
                 setDownloadProgress("");
                 return;
             }
-            
-            const textContent = await downloadBatchResults(currentJob.outputFileUri);
-            
-            if (textContent.trim().startsWith('<')) {
-                throw new Error(t('cloud_html_instead_json'));
-            }
-
-            const lines = textContent.split('\n');
-            setDownloadProgress(formatText(t('cloud_parsing_items'), { count: lines.length }));
-            
-            const extractedItems: ExtractedItem[] = [];
-            
-            lines.forEach((line: string, index: number) => {
-                if (!line.trim()) return;
-                try {
-                    const json = JSON.parse(line);
-                    const candidates = json.response?.candidates || [];
-                    
-                    // Base ID extraction
-                    let idName = `result_${index + 1}`;
-                    if (json.custom_id) {
-                         // Decoded dot
-                         const decodedId = json.custom_id.replace(/_DOT_/g, '.');
-                         idName = decodedId;
-                    }
-
-                    if (candidates.length > 0) {
-                        const parts = candidates[0].content?.parts || [];
-                        let hasImage = false;
-                        
-                        // Check for Images
-                        for (const part of parts) {
-                            const inlineData = part.inlineData || part.inline_data;
-                            if (inlineData && inlineData.data) {
-                                hasImage = true;
-                                const data = inlineData.data;
-                                const mimeType = inlineData.mimeType || inlineData.mime_type || 'image/png';
-                                
-                                let ext = 'png';
-                                if (mimeType.includes('jpeg') || mimeType.includes('jpg')) ext = 'jpg';
-                                
-                                // Ensure filename has extension
-                                let fileName = idName;
-                                if (!fileName.toLowerCase().endsWith(`.${ext}`)) {
-                                     fileName = `${fileName}.${ext}`;
-                                }
-
-                                extractedItems.push({
-                                    name: fileName,
-                                    type: 'image',
-                                    data: data,
-                                    mimeType: mimeType
-                                });
-                            }
-                        }
-
-                        // Check for Text if no images found (or even if found, but usually distinct)
-                        if (!hasImage) {
-                            let textContent = '';
-                            for (const part of parts) {
-                                if (part.text) textContent += part.text;
-                            }
-                            if (textContent) {
-                                let fileName = idName;
-                                if (!fileName.toLowerCase().endsWith('.txt')) {
-                                     fileName = `${fileName}.txt`;
-                                }
-                                extractedItems.push({
-                                    name: fileName,
-                                    type: 'text',
-                                    data: textContent
-                                });
-                            }
-                        }
-                    }
-                } catch (e) {
-                    console.error("Error parsing line " + index, e);
-                }
-            });
-
-            if (extractedItems.length === 0) {
-                alert(t('cloud_download_empty'));
-                setIsDownloading(false);
-                setDownloadProgress("");
-                return;
-            }
 
             setActivePreviewJob(job);
-            setPreviewItems(extractedItems);
-            setDownloadProgress("");
+            setIsPreviewOpen(true);
+            setPreviewError(null);
+            setExcludedPreviewItemIds(new Set());
+
+            setPreviewUsesStreamedMode(processingMode === 'streamed');
+            setPreviewSourceUri(currentJob.outputFileUri);
+            streamedItemsRef.current = [];
+            setPreviewTotalItems(0);
+            setPreviewItems([]);
+            await loadPreviewItemsStreamed(currentJob.outputFileUri);
 
         } catch (error: any) {
             alert(`${t('cloud_download_failed')} ${error.message}`);
+            setIsPreviewOpen(false);
             setDownloadProgress("");
         } finally {
             setIsDownloading(false);
@@ -707,11 +828,16 @@ const CloudBatchProcessor: React.FC = () => {
 
     const handleSaveToGallery = async () => {
         if (!previewItems || !user) return;
+        const itemsToSave = previewItems.filter(item => !excludedPreviewItemIds.has(item.id));
+        if (itemsToSave.length === 0) {
+            alert(t('cloud_download_empty'));
+            return;
+        }
         setIsSavingToGallery(true);
         
         try {
             let savedCount = 0;
-            for (const item of previewItems) {
+            for (const item of itemsToSave) {
                 if (item.type === 'image') {
                     await saveGeneration(
                         user.id,
@@ -745,13 +871,18 @@ const CloudBatchProcessor: React.FC = () => {
 
     const handleZipDownload = async () => {
         if (!previewItems || !activePreviewJob) return;
+        const itemsToZip = previewItems.filter(item => !excludedPreviewItemIds.has(item.id));
+        if (itemsToZip.length === 0) {
+            alert(t('cloud_download_empty'));
+            return;
+        }
         
         try {
             const safeDisplayName = activePreviewJob.displayId.replace(/\s+/g, '_').replace(/[\(\)]/g, '');
             // @ts-ignore
             const zip = new JSZip();
             
-            previewItems.forEach((item) => {
+            itemsToZip.forEach((item) => {
                 if (item.type === 'image') {
                     zip.file(item.name, item.data, {base64: true});
                 } else {
@@ -811,13 +942,20 @@ const CloudBatchProcessor: React.FC = () => {
     const parsedPromptsCount = parseBatchPrompts(batchPromptsRaw, config.userPrompt).length;
     const hasPromptForImageBatch = parsedPromptsCount > 0;
     const totalImageRequestsEstimate = parsedPromptsCount > 0 ? parsedPromptsCount * Math.max(1, generationsPerPrompt || 1) : Math.max(1, generationsPerPrompt || 1);
+    const queuedFilesCount = mode === 'image' ? images.length : textFiles.length;
+    const isCreateDisabled = (mode === 'image' && images.length === 0 && !hasPromptForImageBatch) || (mode === 'text' && textFiles.length === 0);
+    const promptCountForSummary = parsedPromptsCount > 0 ? parsedPromptsCount : 1;
+    const summaryRequestEstimate = mode === 'image'
+        ? Math.max(1, images.length || 1) * promptCountForSummary * Math.max(1, generationsPerPrompt || 1)
+        : Math.max(1, Math.ceil(textFiles.length / Math.max(1, filesPerRequest || 1)));
+    const visiblePreviewItems = (previewItems || []).filter(item => !excludedPreviewItemIds.has(item.id));
 
     const paginate = (pageNumber: number) => setCurrentPage(pageNumber);
 
     return (
         <div className="space-y-8">
             {/* --- PREVIEW MODAL --- */}
-            {previewItems && activePreviewJob && (
+            {isPreviewOpen && activePreviewJob && (
                 <div className="fixed inset-0 z-[100] bg-black/90 backdrop-blur-sm flex items-center justify-center p-4 animate-fade-in">
                     <div className="bg-slate-900 border border-slate-700 rounded-2xl w-full max-w-6xl max-h-[90vh] flex flex-col shadow-2xl overflow-hidden">
                         <div className="p-6 border-b border-slate-700 flex justify-between items-center bg-slate-800/50">
@@ -827,11 +965,11 @@ const CloudBatchProcessor: React.FC = () => {
                                     {t('cloud_preview_title')}
                                 </h2>
                                 <p className="text-sm text-slate-400 mt-1">
-                                    {activePreviewJob.displayId} — {previewItems.length} {t('items_count')}
+                                    {activePreviewJob.displayId} — {visiblePreviewItems.length} / {(previewUsesStreamedMode ? previewTotalItems : (previewItems?.length || 0))} {t('items_count')}
                                 </p>
                             </div>
                             <button 
-                                onClick={() => setPreviewItems(null)}
+                                onClick={closePreviewModal}
                                 className="w-10 h-10 rounded-full bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white flex items-center justify-center transition-all"
                             >
                                 <i className="fas fa-times text-xl"></i>
@@ -839,9 +977,34 @@ const CloudBatchProcessor: React.FC = () => {
                         </div>
 
                         <div className="flex-1 overflow-y-auto p-6 bg-slate-950/50 custom-scrollbar">
+                            {previewError && (
+                                <div className="mb-4 p-3 rounded-lg border border-red-500/40 bg-red-900/20 text-red-300 text-sm">
+                                    {previewError}
+                                </div>
+                            )}
+                            {isPreviewStreaming && (
+                                <div className="mb-4 text-xs text-slate-400 flex items-center gap-2">
+                                    <i className="fas fa-spinner fa-spin"></i>
+                                    {downloadProgress || t('cloud_fetching_data')}
+                                </div>
+                            )}
+
+                            {!isPreviewStreaming && visiblePreviewItems.length === 0 && !previewError ? (
+                                <div className="text-sm text-slate-500 text-center py-10">{t('cloud_download_empty')}</div>
+                            ) : (
                             <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4">
-                                {previewItems.map((item, idx) => (
-                                    <div key={idx} className="aspect-square rounded-xl overflow-hidden border border-slate-700 bg-slate-800 relative group flex flex-col">
+                                {visiblePreviewItems.map((item, idx) => (
+                                    <div key={item.id} className="aspect-square rounded-xl overflow-hidden border border-slate-700 bg-slate-800 relative group flex flex-col">
+                                        <button
+                                            type="button"
+                                            onClick={() => toggleExcludePreviewItem(item.id)}
+                                            className="absolute top-2 right-2 z-20 w-7 h-7 rounded-full bg-red-600/85 hover:bg-red-500 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+                                            title={t('cloud_exclude_item')}
+                                            aria-label={t('cloud_exclude_item')}
+                                        >
+                                            <i className="fas fa-times text-xs"></i>
+                                        </button>
+
                                         {item.type === 'image' ? (
                                             <img 
                                                 src={`data:${item.mimeType};base64,${item.data}`} 
@@ -865,36 +1028,55 @@ const CloudBatchProcessor: React.FC = () => {
                                     </div>
                                 ))}
                             </div>
+                            )}
                         </div>
 
-                        <div className="p-6 border-t border-slate-700 bg-slate-800/50 flex flex-col sm:flex-row justify-end gap-4">
+                        <div className="p-6 border-t border-slate-700 bg-slate-800/50 flex flex-col gap-4">
+                            <div className="flex flex-col sm:flex-row justify-end gap-4">
                             <div className="mr-auto text-xs text-slate-400 flex items-center">
-                                {t('cloud_tip_zip_names')}
+                                {previewUsesStreamedMode ? t('cloud_streamed_page_actions_hint') : t('cloud_tip_zip_names')}
                             </div>
                             
-                            <Button variant="secondary" onClick={handleZipDownload} icon="fa-file-zipper">
+                            <Button
+                                variant="secondary"
+                                onClick={handleZipDownload}
+                                icon="fa-file-zipper"
+                                disabled={isPreviewStreaming || visiblePreviewItems.length === 0}
+                            >
                                 {t('download_zip')}
                             </Button>
                             
-                            <Button variant="success" onClick={handleSaveToGallery} isLoading={isSavingToGallery} icon="fa-save">
+                            <Button
+                                variant="success"
+                                onClick={handleSaveToGallery}
+                                isLoading={isSavingToGallery}
+                                icon="fa-save"
+                                disabled={isPreviewStreaming || visiblePreviewItems.length === 0}
+                            >
                                 {t('cloud_save_to_gallery')}
                             </Button>
+                            </div>
                         </div>
                     </div>
                 </div>
             )}
 
-            <div className="bg-slate-800/50 backdrop-blur-sm p-6 rounded-2xl border border-slate-700">
-                <div className="flex items-center justify-between mb-6">
+            <div className="bg-slate-800/50 backdrop-blur-sm p-6 lg:p-7 rounded-2xl border border-slate-700">
+                <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 mb-7">
                     <div className="flex items-center gap-4">
                         <div className="bg-blue-600/20 p-2 rounded-lg">
                              <i className="fas fa-cloud text-blue-500"></i>
                         </div>
-                        <h2 className="text-xl font-bold text-white">{t('cloud_setup_title')}</h2>
+                        <div>
+                            <h2 className="text-xl font-bold text-white">{t('cloud_setup_title')}</h2>
+                            <p className="text-xs text-slate-400 mt-1">
+                                {mode === 'image' ? t('cloud_mode_image_desc') : t('cloud_mode_text_desc')}
+                            </p>
+                        </div>
                     </div>
 
-                    {/* Mode Switcher */}
-                     <div className="flex bg-slate-800 rounded-lg p-1 border border-slate-700">
+                    <div className="flex flex-col sm:flex-row gap-3 self-start lg:self-auto">
+                    <div className="flex bg-slate-800 rounded-lg p-1 border border-slate-700">
                         <button 
                             onClick={() => setMode('image')}
                             className={`px-4 py-2 rounded-md text-sm font-bold transition-all flex items-center gap-2 ${mode === 'image' ? 'bg-theme-primary text-white shadow-lg' : 'text-slate-400 hover:text-white'}`}
@@ -907,89 +1089,131 @@ const CloudBatchProcessor: React.FC = () => {
                         >
                             <i className="fas fa-file-alt"></i> {t('mode_text_csv')}
                         </button>
-                     </div>
+                    </div>
+
+                        <div className="flex bg-slate-800 rounded-lg p-1 border border-slate-700">
+                            <button
+                                onClick={() => setProcessingMode('classic')}
+                                className={`px-3 py-2 rounded-md text-xs font-bold transition-all ${processingMode === 'classic' ? 'bg-blue-600 text-white shadow-sm' : 'text-slate-400 hover:text-white'}`}
+                                title={t('cloud_processing_classic_desc')}
+                            >
+                                {t('cloud_processing_classic')}
+                            </button>
+                            <button
+                                onClick={() => setProcessingMode('streamed')}
+                                className={`px-3 py-2 rounded-md text-xs font-bold transition-all ${processingMode === 'streamed' ? 'bg-blue-600 text-white shadow-sm' : 'text-slate-400 hover:text-white'}`}
+                                title={t('cloud_processing_streamed_desc')}
+                            >
+                                {t('cloud_processing_streamed')}
+                            </button>
+                        </div>
+                    </div>
                 </div>
 
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
-                    <div className="space-y-4">
-                        <Select label={t('model_label')} options={MODELS} value={config.model} onChange={e => setConfig({ ...config, model: e.target.value as ModelType })} />
-                        
-                        {mode === 'image' && (
-                            <>
-                                <Select label={t('resolution_label')} options={RESOLUTIONS} value={config.resolution} onChange={e => setConfig({ ...config, resolution: e.target.value })} />
-                                <Select label={t('ar_label')} options={translatedAspectRatios} value={config.aspectRatio} onChange={e => setConfig({ ...config, aspectRatio: e.target.value })} />
+                <div className="grid grid-cols-1 xl:grid-cols-12 gap-7 mb-7">
+                    <div className="xl:col-span-5 bg-slate-900/40 border border-slate-700 rounded-2xl p-5">
+                        <h3 className="text-base font-semibold text-white mb-4 flex items-center gap-2">
+                            <i className="fas fa-sliders-h text-blue-400"></i>
+                            {t('cloud_section_model')}
+                        </h3>
+
+                        <div className="space-y-5">
+                            <Select label={t('model_label')} options={MODELS} value={config.model} onChange={e => setConfig({ ...config, model: e.target.value as ModelType })} />
+
+                            {mode === 'image' && (
+                                <>
+                                    <Select label={t('resolution_label')} options={RESOLUTIONS} value={config.resolution} onChange={e => setConfig({ ...config, resolution: e.target.value })} />
+                                    <Select label={t('ar_label')} options={translatedAspectRatios} value={config.aspectRatio} onChange={e => setConfig({ ...config, aspectRatio: e.target.value })} />
+                                    <div>
+                                        <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2 ml-1">{t('generations_per_prompt_label')}</label>
+                                        <NumberStepper
+                                            value={generationsPerPrompt}
+                                            onChange={setGenerationsPerPrompt}
+                                            min={1}
+                                            max={50}
+                                            className="max-w-[280px]"
+                                            decreaseAriaLabel="Decrease generations per prompt"
+                                            increaseAriaLabel="Increase generations per prompt"
+                                        />
+                                        <p className="text-[10px] text-slate-500 mt-1 ml-1">
+                                            {formatText(t('generations_per_prompt_hint'), { count: generationsPerPrompt })}
+                                        </p>
+                                    </div>
+                                </>
+                            )}
+
+                            {mode === 'text' && (
                                 <div>
-                                    <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2 ml-1">{t('generations_per_prompt_label')}</label>
+                                    <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2 ml-1">{t('files_per_request_label')}</label>
                                     <NumberStepper
-                                        value={generationsPerPrompt}
-                                        onChange={setGenerationsPerPrompt}
+                                        value={filesPerRequest}
+                                        onChange={setFilesPerRequest}
                                         min={1}
                                         max={50}
-                                        decreaseAriaLabel="Decrease generations per prompt"
-                                        increaseAriaLabel="Increase generations per prompt"
+                                        className="max-w-[280px]"
+                                        decreaseAriaLabel="Decrease files per request"
+                                        increaseAriaLabel="Increase files per request"
                                     />
-                                    <p className="text-[10px] text-slate-500 mt-1 ml-1">
-                                        {formatText(t('generations_per_prompt_hint'), { count: generationsPerPrompt })}
-                                    </p>
+                                    <p className="text-[10px] text-slate-500 mt-1 ml-1">{t('files_per_request_hint')}</p>
                                 </div>
-                            </>
-                        )}
-                        
-                        {mode === 'text' && (
-                             <div>
-                                <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2 ml-1">{t('files_per_request_label')}</label>
-                                <NumberStepper
-                                    value={filesPerRequest}
-                                    onChange={setFilesPerRequest}
-                                    min={1}
-                                    max={50}
-                                    decreaseAriaLabel="Decrease files per request"
-                                    increaseAriaLabel="Increase files per request"
-                                />
-                                <p className="text-[10px] text-slate-500 mt-1 ml-1">{t('files_per_request_hint')}</p>
-                             </div>
-                        )}
+                            )}
 
-                        <div>
-                            <label className="block text-sm font-medium text-slate-300 mb-2">{t('preset_label')}</label>
-                            <select className="w-full bg-slate-800 border border-slate-700 text-slate-100 rounded-lg px-4 py-3 appearance-none focus:outline-none focus:ring-2 focus:ring-blue-500" onChange={handlePresetChange} defaultValue="">
-                                <option value="">{t('load_preset_placeholder')}</option>
-                                {presets.map(p => ( <option key={p.name} value={p.name}>{p.name}</option> ))}
-                            </select>
-                        </div>
-                        <div>
-                             <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2 ml-1">{t('job_name_optional')}</label>
-                             <input type="text" className="w-full bg-slate-800 border border-slate-700 text-slate-100 rounded-xl px-4 py-3 focus:outline-none focus:ring-2 focus:ring-blue-500/50 placeholder-slate-600" placeholder={t('job_name_placeholder')} value={customJobName} onChange={(e) => setCustomJobName(e.target.value)} />
+                            <div>
+                                <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2 ml-1">{t('job_name_optional')}</label>
+                                <input type="text" className="w-full bg-slate-800 border border-slate-700 text-slate-100 rounded-xl px-4 py-3 focus:outline-none focus:ring-2 focus:ring-blue-500/50 placeholder-slate-600" placeholder={t('job_name_placeholder')} value={customJobName} onChange={(e) => setCustomJobName(e.target.value)} />
+                            </div>
                         </div>
                     </div>
-                    
-                    <div className="h-full flex flex-col gap-4">
-                         <TextArea label={t('system_instr_label')} value={config.systemPrompt} onChange={e => setConfig({ ...config, systemPrompt: e.target.value })} className="flex-1" />
-                         <TextArea label={t('user_prompt_label')} value={config.userPrompt} onChange={e => setConfig({ ...config, userPrompt: e.target.value })} className="flex-1" placeholder={mode === 'text' ? t('analyze_files_placeholder') : t('image_gen_placeholder')} />
-                                 <TextArea
-                                     label={t('batch_prompts_label')}
-                                     value={batchPromptsRaw}
-                                     onChange={e => setBatchPromptsRaw(e.target.value)}
-                                     className="flex-1"
-                                     placeholder={t('batch_prompts_placeholder')}
-                                 />
-                                 <p className="text-[11px] text-slate-500 -mt-3 ml-1">
-                                     {parsedPromptsCount > 0
-                                         ? mode === 'image'
-                                             ? formatText(t('batch_prompts_hint_image'), {
-                                                 prompts: parsedPromptsCount,
-                                                 generations: Math.max(1, generationsPerPrompt || 1),
-                                                 requests: totalImageRequestsEstimate,
-                                             })
-                                             : formatText(t('batch_prompts_hint_text'), {
-                                                 prompts: parsedPromptsCount,
-                                             })
-                                         : t('batch_prompts_hint_empty')}
-                                 </p>
+
+                    <div className="xl:col-span-7 bg-slate-900/40 border border-slate-700 rounded-2xl p-5">
+                        <h3 className="text-base font-semibold text-white mb-4 flex items-center gap-2">
+                            <i className="fas fa-pen-ruler text-violet-400"></i>
+                            {t('cloud_section_prompts')}
+                        </h3>
+
+                        <div className="space-y-5">
+                            <div>
+                                <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2 ml-1">{t('preset_label')}</label>
+                                <select className="w-full bg-slate-800 border border-slate-700 text-slate-100 rounded-lg px-4 py-3 appearance-none focus:outline-none focus:ring-2 focus:ring-blue-500" onChange={handlePresetChange} defaultValue="">
+                                    <option value="">{t('load_preset_placeholder')}</option>
+                                    {presets.map(p => ( <option key={p.name} value={p.name}>{p.name}</option> ))}
+                                </select>
+                            </div>
+
+                            <TextArea label={t('system_instr_label')} value={config.systemPrompt} onChange={e => setConfig({ ...config, systemPrompt: e.target.value })} className="flex-1" />
+                            <TextArea label={t('user_prompt_label')} value={config.userPrompt} onChange={e => setConfig({ ...config, userPrompt: e.target.value })} className="flex-1" placeholder={mode === 'text' ? t('analyze_files_placeholder') : t('image_gen_placeholder')} />
+                            <TextArea
+                                label={t('batch_prompts_label')}
+                                value={batchPromptsRaw}
+                                onChange={e => setBatchPromptsRaw(e.target.value)}
+                                className="flex-1"
+                                placeholder={t('batch_prompts_placeholder')}
+                            />
+                            <p className="text-[11px] text-slate-500 -mt-3 ml-1">
+                                {parsedPromptsCount > 0
+                                    ? mode === 'image'
+                                        ? formatText(t('batch_prompts_hint_image'), {
+                                            prompts: parsedPromptsCount,
+                                            generations: Math.max(1, generationsPerPrompt || 1),
+                                            requests: totalImageRequestsEstimate,
+                                        })
+                                        : formatText(t('batch_prompts_hint_text'), {
+                                            prompts: parsedPromptsCount,
+                                        })
+                                    : t('batch_prompts_hint_empty')}
+                            </p>
+                        </div>
                     </div>
                 </div>
 
-                <div className={`bg-slate-800/50 backdrop-blur-sm p-6 rounded-2xl border transition-colors mb-6 ${isDraggingOverGallery ? 'border-blue-500 bg-blue-500/10' : 'border-slate-700'}`} onDragOver={handleDragOver} onDragLeave={handleDragLeave} onDrop={handleDrop}>
+                <div className={`bg-slate-800/50 backdrop-blur-sm p-6 rounded-2xl border transition-colors mb-7 ${isDraggingOverGallery ? 'border-blue-500 bg-blue-500/10' : 'border-slate-700'}`} onDragOver={handleDragOver} onDragLeave={handleDragLeave} onDrop={handleDrop}>
+                    <div className="mb-4">
+                        <h3 className="text-sm font-semibold text-white mb-1 flex items-center gap-2">
+                            <i className="fas fa-inbox text-emerald-400"></i>
+                            {t('cloud_section_input_launch')}
+                        </h3>
+                    </div>
+
                     <div className="flex justify-between items-center mb-4">
                         <h2 className="text-lg font-medium text-white flex items-center gap-2">
                              <i className={`fas ${mode === 'image' ? 'fa-images' : 'fa-file-alt'} text-slate-400`}></i>
@@ -1048,19 +1272,48 @@ const CloudBatchProcessor: React.FC = () => {
                     )}
                 </div>
 
-                <div className="flex justify-between items-center">
-                    <span className="text-slate-400 text-sm">
-                        {mode === 'image' ? images.length : textFiles.length} {t('files_queued')}
-                    </span>
-                    <Button 
-                        variant="success" 
-                        onClick={handleCreateBatch} 
-                        isLoading={isUploading} 
-                        disabled={(mode === 'image' && images.length === 0 && !hasPromptForImageBatch) || (mode === 'text' && textFiles.length === 0)} 
-                        icon="fa-cloud-upload-alt"
-                    >
-                        {t('upload_create_btn')}
-                    </Button>
+                <div className="bg-slate-900/40 border border-slate-700 rounded-2xl p-5">
+                    <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-5">
+                        <div>
+                            <h3 className="text-sm font-semibold text-white mb-2">{t('cloud_summary_title')}</h3>
+                            <div className="flex flex-wrap gap-2 text-xs">
+                                <span className="px-2 py-1 rounded-md border border-slate-700 bg-slate-800/80 text-slate-300">
+                                    {t('cloud_summary_files')}: <strong className="text-white">{queuedFilesCount}</strong>
+                                </span>
+                                <span className="px-2 py-1 rounded-md border border-slate-700 bg-slate-800/80 text-slate-300">
+                                    {t('cloud_summary_prompts')}: <strong className="text-white">{promptCountForSummary}</strong>
+                                </span>
+                                <span className="px-2 py-1 rounded-md border border-slate-700 bg-slate-800/80 text-slate-300">
+                                    {t('cloud_summary_requests')}: <strong className="text-white">{summaryRequestEstimate}</strong>
+                                </span>
+                                <span className={`px-2 py-1 rounded-md border ${isCreateDisabled ? 'border-amber-700/50 bg-amber-900/20 text-amber-300' : 'border-emerald-700/50 bg-emerald-900/20 text-emerald-300'}`}>
+                                    {isCreateDisabled ? t('cloud_not_ready_badge') : t('cloud_ready_badge')}
+                                </span>
+                            </div>
+
+                            {mode === 'image' && isCreateDisabled && (
+                                <p className="text-xs text-amber-300 mt-2">
+                                    {t('cloud_requirement_image')}
+                                </p>
+                            )}
+                            {mode === 'text' && isCreateDisabled && (
+                                <p className="text-xs text-amber-300 mt-2">
+                                    {t('cloud_requirement_text')}
+                                </p>
+                            )}
+                        </div>
+
+                        <Button 
+                            variant="success" 
+                            onClick={handleCreateBatch} 
+                            isLoading={isUploading} 
+                            disabled={isCreateDisabled}
+                            className="min-w-[180px]"
+                            icon="fa-cloud-upload-alt"
+                        >
+                            {t('upload_create_btn')}
+                        </Button>
+                    </div>
                 </div>
             </div>
 
