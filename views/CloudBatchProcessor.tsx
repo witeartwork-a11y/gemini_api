@@ -3,7 +3,7 @@ import React, { useState, useEffect } from 'react';
 import { Select, TextArea } from '../components/ui/InputComponents';
 import Button from '../components/ui/Button';
 import FileUploader from '../components/ui/FileUploader';
-import { uploadFileToGemini, createCloudBatchJob, getBatchJobStatus, downloadBatchResults, cancelBatchJob, createBatchJobFromRequests, fileToText } from '../services/geminiService';
+import { uploadFileToGemini, getBatchJobStatus, downloadBatchResults, cancelBatchJob, createBatchJobFromRequests, fileToText } from '../services/geminiService';
 import { ProcessingConfig, ModelType, CloudBatchJob } from '../types';
 import { MODELS, RESOLUTIONS, ASPECT_RATIOS } from '../constants';
 import { useLanguage } from '../contexts/LanguageContext';
@@ -36,6 +36,32 @@ type BatchMode = 'image' | 'text';
 const CloudBatchProcessor: React.FC = () => {
     const { t } = useLanguage();
 
+    const formatText = (template: string, params: Record<string, string | number>) => {
+        return Object.entries(params).reduce((acc, [key, value]) => {
+            return acc.replaceAll(`{${key}}`, String(value));
+        }, template);
+    };
+
+    const getLocalizedJobStatus = (status: string) => {
+        const normalized = (status || '').replace('JOB_STATE_', '').toUpperCase();
+        switch (normalized) {
+            case 'PENDING':
+                return t('cloud_status_pending');
+            case 'RUNNING':
+                return t('cloud_status_running');
+            case 'SUCCEEDED':
+                return t('cloud_status_succeeded');
+            case 'FAILED':
+                return t('cloud_status_failed');
+            case 'CANCELLED':
+                return t('cloud_status_cancelled');
+            case 'STATE_UNSPECIFIED':
+            case 'UNSPECIFIED':
+            default:
+                return t('cloud_status_unspecified');
+        }
+    };
+
     const translatedAspectRatios = [
         { value: 'Auto', label: t('ar_auto') },
         { value: '1:1', label: t('ar_square') },
@@ -67,6 +93,8 @@ const CloudBatchProcessor: React.FC = () => {
     const [images, setImages] = useState<ImageAsset[]>([]);
     const [textFiles, setTextFiles] = useState<File[]>([]);
     const [filesPerRequest, setFilesPerRequest] = useState<number>(1);
+    const [generationsPerPrompt, setGenerationsPerPrompt] = useState<number>(1);
+    const [batchPromptsRaw, setBatchPromptsRaw] = useState<string>('');
 
     const [customJobName, setCustomJobName] = useState<string>('');
     const [isUploading, setIsUploading] = useState(false);
@@ -161,8 +189,23 @@ const CloudBatchProcessor: React.FC = () => {
         setJobs(newJobs);
     };
 
+    const mergeJobsById = (baseJobs: CloudBatchJob[], incomingJobs: CloudBatchJob[]): CloudBatchJob[] => {
+        const mergedMap = new Map<string, CloudBatchJob>();
+
+        baseJobs.forEach(job => {
+            mergedMap.set(job.id, job);
+        });
+
+        incomingJobs.forEach(job => {
+            const prev = mergedMap.get(job.id);
+            mergedMap.set(job.id, prev ? { ...prev, ...job } : job);
+        });
+
+        return Array.from(mergedMap.values()).sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+    };
+
     const handleClearHistory = () => {
-        if (confirm("Are you sure you want to clear the job history?")) {
+        if (confirm(t('cloud_clear_history_confirm'))) {
             saveJobs([]);
             setCurrentPage(1);
         }
@@ -207,8 +250,41 @@ const CloudBatchProcessor: React.FC = () => {
         }
     };
 
+    const parseBatchPrompts = (rawPrompts: string, fallbackPrompt: string): string[] => {
+        const trimmedRaw = rawPrompts.trim();
+
+        if (trimmedRaw) {
+            const separatorRegex = /^\s*---\s*$/m;
+
+            if (separatorRegex.test(trimmedRaw)) {
+                const fromBlocks = trimmedRaw
+                    .split(/\n\s*---\s*\n/g)
+                    .map(prompt => prompt.trim())
+                    .filter(Boolean);
+
+                if (fromBlocks.length > 0) {
+                    return fromBlocks;
+                }
+            }
+
+            const fromLines = trimmedRaw
+                .split('\n')
+                .map(prompt => prompt.trim())
+                .filter(Boolean);
+
+            if (fromLines.length > 0) {
+                return fromLines;
+            }
+        }
+
+        const singlePrompt = fallbackPrompt.trim();
+        return singlePrompt ? [singlePrompt] : [];
+    };
+
     const handleCreateBatch = async () => {
-        if (mode === 'image' && images.length === 0) return;
+        const parsedPrompts = parseBatchPrompts(batchPromptsRaw, config.userPrompt);
+
+        if (mode === 'image' && images.length === 0 && parsedPrompts.length === 0) return;
         if (mode === 'text' && textFiles.length === 0) return;
 
         setIsUploading(true);
@@ -218,45 +294,155 @@ const CloudBatchProcessor: React.FC = () => {
             const timestamp = Date.now();
 
             if (mode === 'image') {
-                // Image Batch Logic
-                const chunks: ImageAsset[][] = [];
-                for (let i = 0; i < images.length; i += BATCH_SIZE_LIMIT) {
-                    chunks.push(images.slice(i, i + BATCH_SIZE_LIMIT));
+                const promptsForBatch = parsedPrompts.length > 0 ? parsedPrompts : [''];
+                const copiesPerPrompt = Math.max(1, generationsPerPrompt || 1);
+                const isProImageModel = config.model === ModelType.GEMINI_3_PRO_IMAGE;
+                const isImageModel = config.model.includes('image');
+                const uploadedResources: { uri: string, mimeType: string, originalName: string }[] = [];
+
+                for (let i = 0; i < images.length; i++) {
+                    const img = images[i];
+                    const res = await uploadFileToGemini(img.file, i);
+                    uploadedResources.push({
+                        uri: res.uri,
+                        mimeType: img.file.type,
+                        originalName: res.displayName || res.name.replace('files/', '')
+                    });
                 }
 
-                for (let i = 0; i < chunks.length; i++) {
-                    const chunk = chunks[i];
-                    const chunkIndex = i + 1;
-                    const startIndex = i * BATCH_SIZE_LIMIT + 1;
-                    const endIndex = Math.min((i + 1) * BATCH_SIZE_LIMIT, images.length);
-                    
-                    let displayJobName = customJobName 
-                        ? `${customJobName} (${startIndex}-${endIndex})`
-                        : `Batch_${timestamp}_Img_P${chunkIndex}`;
+                const imageRequests: { custom_id: string; request: any }[] = [];
 
-                    const uploadedResources: { uri: string, mimeType: string, originalName: string }[] = [];
-                    for (let j = 0; j < chunk.length; j++) {
-                        const img = chunk[j];
-                        const globalIndex = (i * BATCH_SIZE_LIMIT) + j;
-                        const res = await uploadFileToGemini(img.file, globalIndex);
-                        uploadedResources.push({ 
-                            uri: res.uri, 
-                            mimeType: img.file.type,
-                            originalName: res.displayName || res.name.replace('files/', '') 
+                if (uploadedResources.length === 0) {
+                    promptsForBatch.forEach((prompt, promptIndex) => {
+                        for (let copyIndex = 0; copyIndex < copiesPerPrompt; copyIndex++) {
+                            let textPrompt = prompt;
+                            if (config.systemPrompt) {
+                                textPrompt = `${config.systemPrompt}\n\n${textPrompt}`.trim();
+                            }
+
+                            const parts: any[] = [];
+                            if (textPrompt) {
+                                parts.push({ text: textPrompt });
+                            }
+
+                            const generationConfig: any = {
+                                temperature: config.temperature,
+                            };
+
+                            if (isImageModel) {
+                                generationConfig.imageConfig = {};
+                                if (config.aspectRatio && config.aspectRatio !== 'Auto') {
+                                    generationConfig.imageConfig.aspectRatio = config.aspectRatio;
+                                }
+                                if (isProImageModel && config.resolution) {
+                                    generationConfig.imageConfig.imageSize = config.resolution;
+                                }
+                                if (!isProImageModel) {
+                                    generationConfig.responseModalities = ['TEXT', 'IMAGE'];
+                                }
+                            }
+
+                            const requestBody: any = {
+                                contents: [{ parts }],
+                                generationConfig,
+                            };
+
+                            if (isProImageModel) {
+                                requestBody.tools = [{ googleSearch: {} }];
+                            }
+
+                            imageRequests.push({
+                                custom_id: `prompt_${promptIndex + 1}_g${copyIndex + 1}_${timestamp}`,
+                                request: requestBody,
+                            });
+                        }
+                    });
+                } else {
+                    uploadedResources.forEach((resource, resourceIndex) => {
+                        promptsForBatch.forEach((prompt, promptIndex) => {
+                            for (let copyIndex = 0; copyIndex < copiesPerPrompt; copyIndex++) {
+                                const parts: any[] = [];
+
+                                let textPrompt = prompt;
+                                if (config.systemPrompt) {
+                                    textPrompt = `${config.systemPrompt}\n\n${textPrompt}`.trim();
+                                }
+
+                                if (textPrompt) {
+                                    parts.push({ text: textPrompt });
+                                }
+
+                                parts.push({
+                                    fileData: {
+                                        fileUri: resource.uri,
+                                        mimeType: resource.mimeType,
+                                    }
+                                });
+
+                                const generationConfig: any = {
+                                    temperature: config.temperature,
+                                };
+
+                                if (isImageModel) {
+                                    generationConfig.imageConfig = {};
+                                    if (config.aspectRatio && config.aspectRatio !== 'Auto') {
+                                        generationConfig.imageConfig.aspectRatio = config.aspectRatio;
+                                    }
+                                    if (isProImageModel && config.resolution) {
+                                        generationConfig.imageConfig.imageSize = config.resolution;
+                                    }
+                                    if (!isProImageModel) {
+                                        generationConfig.responseModalities = ['TEXT', 'IMAGE'];
+                                    }
+                                }
+
+                                const requestBody: any = {
+                                    contents: [{ parts }],
+                                    generationConfig,
+                                };
+
+                                if (isProImageModel) {
+                                    requestBody.tools = [{ googleSearch: {} }];
+                                }
+
+                                const baseCustomId = resource.originalName.replace(/\./g, '_DOT_');
+                                const promptSuffix = promptsForBatch.length > 1 ? `_p${promptIndex + 1}` : '';
+
+                                imageRequests.push({
+                                    custom_id: `${baseCustomId}${promptSuffix}_g${copyIndex + 1}_${resourceIndex + 1}`,
+                                    request: requestBody,
+                                });
+                            }
                         });
-                    }
+                    });
+                }
 
-                    const batchJob = await createCloudBatchJob(uploadedResources, config);
-                    
+                for (let i = 0; i < imageRequests.length; i += BATCH_SIZE_LIMIT) {
+                    const reqChunk = imageRequests.slice(i, i + BATCH_SIZE_LIMIT);
+                    const chunkIndex = Math.floor(i / BATCH_SIZE_LIMIT) + 1;
+                    const startIndex = i + 1;
+                    const endIndex = i + reqChunk.length;
+
+                    const displayJobName = customJobName
+                        ? `${customJobName} (${startIndex}-${endIndex})`
+                        : formatText(t('cloud_default_image_job_name'), { timestamp, page: chunkIndex });
+
+                    const batchJob = await createBatchJobFromRequests(reqChunk, {
+                        model: config.model,
+                        displayName: displayJobName,
+                    });
+
                     newCreatedJobs.push({
                         id: batchJob.name,
                         displayId: displayJobName,
                         status: batchJob.state || 'PENDING',
                         createdAt: new Date().toLocaleTimeString(),
                         timestamp: timestamp,
+                        updatedAt: Date.now(),
                         model: config.model
                     });
                 }
+
                 setImages([]);
             } else {
                 // Text Batch Logic
@@ -269,6 +455,8 @@ const CloudBatchProcessor: React.FC = () => {
                 // 2. Prepare Requests
                 const requests: any[] = [];
                 
+                const promptsForBatch = parsedPrompts.length > 0 ? parsedPrompts : [''];
+
                 for (const chunk of chunks) {
                     // Combine text contents
                     let combinedText = "";
@@ -279,32 +467,32 @@ const CloudBatchProcessor: React.FC = () => {
                         filenames.push(file.name);
                     }
 
-                    // Build Prompt
-                    let textPrompt = config.userPrompt || '';
-                    if (combinedText) {
-                         textPrompt = `${textPrompt}\n${combinedText}`.trim();
-                    }
+                    promptsForBatch.forEach((basePrompt, promptIndex) => {
+                        let textPrompt = basePrompt || '';
+                        if (combinedText) {
+                            textPrompt = `${textPrompt}\n${combinedText}`.trim();
+                        }
 
-                    // Build Config
-                    const generationConfig: any = {
-                        temperature: config.temperature,
-                    };
-                    if (config.systemPrompt) {
-                        generationConfig.systemInstruction = config.systemPrompt;
-                    }
+                        const generationConfig: any = {
+                            temperature: config.temperature,
+                        };
+                        if (config.systemPrompt) {
+                            generationConfig.systemInstruction = config.systemPrompt;
+                        }
 
-                    const requestBody = {
-                        contents: [{ parts: [{ text: textPrompt }] }],
-                        generationConfig
-                    };
-                    
-                    // Create ID based on filenames
-                    const safeName = filenames.join('_').substring(0, 50).replace(/[^a-zA-Z0-9_\-.]/g, '_');
-                    const customId = `${safeName}_${Date.now()}`;
+                        const requestBody = {
+                            contents: [{ parts: [{ text: textPrompt }] }],
+                            generationConfig
+                        };
 
-                    requests.push({
-                        custom_id: customId,
-                        request: requestBody
+                        const safeName = filenames.join('_').substring(0, 50).replace(/[^a-zA-Z0-9_\-.]/g, '_') || 'text';
+                        const promptSuffix = promptsForBatch.length > 1 ? `_p${promptIndex + 1}` : '';
+                        const customId = `${safeName}${promptSuffix}_${Date.now()}`;
+
+                        requests.push({
+                            custom_id: customId,
+                            request: requestBody
+                        });
                     });
                 }
 
@@ -317,7 +505,7 @@ const CloudBatchProcessor: React.FC = () => {
                     
                     let displayJobName = customJobName 
                         ? `${customJobName} (Text P${chunkIndex})`
-                        : `Batch_${timestamp}_Txt_P${chunkIndex}`;
+                        : formatText(t('cloud_default_text_job_name'), { timestamp, page: chunkIndex });
 
                     const batchJob = await createBatchJobFromRequests(reqChunk, {
                         model: config.model,
@@ -330,18 +518,19 @@ const CloudBatchProcessor: React.FC = () => {
                         status: batchJob.state || 'PENDING',
                         createdAt: new Date().toLocaleTimeString(),
                         timestamp: timestamp,
+                        updatedAt: Date.now(),
                         model: config.model
                     });
                 }
                 setTextFiles([]);
             }
 
-            saveJobs([...newCreatedJobs, ...jobs]);
+            setJobs(prevJobs => mergeJobsById(prevJobs, newCreatedJobs));
             setCustomJobName('');
             setCurrentPage(1);
             
         } catch (error: any) {
-            alert("Batch Creation Failed: " + error.message);
+            alert(`${t('cloud_batch_creation_failed')} ${error.message}`);
         } finally {
             setIsUploading(false);
         }
@@ -351,14 +540,14 @@ const CloudBatchProcessor: React.FC = () => {
         if (!confirm(t('confirm_cancel'))) return;
         try {
             await cancelBatchJob(jobId);
-            const newJobs = jobs.map(j => j.id === jobId ? { ...j, status: 'JOB_STATE_CANCELLED' } : j);
+            const newJobs = jobs.map(j => j.id === jobId ? { ...j, status: 'JOB_STATE_CANCELLED', updatedAt: Date.now() } : j);
             saveJobs(newJobs);
             setTimeout(() => {
                 const job = newJobs.find(j => j.id === jobId);
                 if (job) checkStatus(job);
             }, 2000);
         } catch (error: any) {
-            alert("Failed to cancel job: " + error.message);
+            alert(`${t('cloud_cancel_failed')} ${error.message}`);
         }
     };
 
@@ -388,7 +577,8 @@ const CloudBatchProcessor: React.FC = () => {
             const updatedJob = { 
                 ...job, 
                 status: statusRes.state, 
-                outputFileUri: outputFile || job.outputFileUri
+                outputFileUri: outputFile || job.outputFileUri,
+                updatedAt: Date.now()
             };
             
             setJobs(prevJobs => prevJobs.map(j => j.id === job.id ? updatedJob : j));
@@ -406,11 +596,11 @@ const CloudBatchProcessor: React.FC = () => {
 
     const handleFetchResults = async (job: CloudBatchJob) => {
         setIsDownloading(true);
-        setDownloadProgress("Fetching data...");
+        setDownloadProgress(t('cloud_fetching_data'));
         try {
             const currentJob = await checkStatus(job);
             if (!currentJob.outputFileUri) {
-                alert(`Error: Could not find output file for job ${job.displayId}.`);
+                alert(formatText(t('cloud_output_not_found'), { jobId: job.displayId }));
                 setIsDownloading(false);
                 setDownloadProgress("");
                 return;
@@ -419,11 +609,11 @@ const CloudBatchProcessor: React.FC = () => {
             const textContent = await downloadBatchResults(currentJob.outputFileUri);
             
             if (textContent.trim().startsWith('<')) {
-                throw new Error("Received HTML instead of JSON. Check API Key or permissions.");
+                throw new Error(t('cloud_html_instead_json'));
             }
 
             const lines = textContent.split('\n');
-            setDownloadProgress(`Parsing ${lines.length} items...`);
+            setDownloadProgress(formatText(t('cloud_parsing_items'), { count: lines.length }));
             
             const extractedItems: ExtractedItem[] = [];
             
@@ -496,7 +686,7 @@ const CloudBatchProcessor: React.FC = () => {
             });
 
             if (extractedItems.length === 0) {
-                alert("Download successful, but no content was extracted.");
+                alert(t('cloud_download_empty'));
                 setIsDownloading(false);
                 setDownloadProgress("");
                 return;
@@ -507,7 +697,7 @@ const CloudBatchProcessor: React.FC = () => {
             setDownloadProgress("");
 
         } catch (error: any) {
-            alert("Download failed: " + error.message);
+            alert(`${t('cloud_download_failed')} ${error.message}`);
             setDownloadProgress("");
         } finally {
             setIsDownloading(false);
@@ -526,7 +716,7 @@ const CloudBatchProcessor: React.FC = () => {
                         user.id,
                         'cloud',
                         activePreviewJob?.model || 'unknown',
-                        `Cloud Batch Result: ${activePreviewJob?.displayId}`,
+                        formatText(t('cloud_history_result_image_prompt'), { jobId: activePreviewJob?.displayId || '' }),
                         `data:${item.mimeType};base64,${item.data}`,
                         undefined,
                         undefined
@@ -536,7 +726,7 @@ const CloudBatchProcessor: React.FC = () => {
                         user.id,
                         'cloud',
                         activePreviewJob?.model || 'unknown',
-                        `Cloud Batch Text Result: ${item.name}`,
+                        formatText(t('cloud_history_result_text_prompt'), { name: item.name }),
                         undefined,
                         item.data,
                         undefined
@@ -544,9 +734,9 @@ const CloudBatchProcessor: React.FC = () => {
                 }
                 savedCount++;
             }
-            alert(`Successfully saved ${savedCount} items to the Gallery!`);
+            alert(formatText(t('cloud_saved_gallery_success'), { count: savedCount }));
         } catch (e: any) {
-            alert(`Error saving to gallery: ${e.message}`);
+            alert(`${t('cloud_save_gallery_failed')} ${e.message}`);
         } finally {
             setIsSavingToGallery(false);
         }
@@ -580,7 +770,7 @@ const CloudBatchProcessor: React.FC = () => {
                 document.body.removeChild(a);
             }, 1000);
         } catch (e: any) {
-            alert("Zip failed: " + e.message);
+            alert(`${t('cloud_zip_failed')} ${e.message}`);
         }
     };
 
@@ -597,9 +787,9 @@ const CloudBatchProcessor: React.FC = () => {
             };
             const text = JSON.stringify(debugInfo, null, 2);
             await navigator.clipboard.writeText(text);
-            alert("Debug info copied!");
+            alert(t('cloud_debug_copied'));
         } catch (error: any) {
-            alert("Debug failed: " + error.message);
+            alert(`${t('cloud_debug_failed')} ${error.message}`);
         }
     };
 
@@ -617,6 +807,9 @@ const CloudBatchProcessor: React.FC = () => {
     const indexOfFirstItem = indexOfLastItem - ITEMS_PER_PAGE;
     const currentJobs = jobs.slice(indexOfFirstItem, indexOfLastItem);
     const totalPages = Math.ceil(jobs.length / ITEMS_PER_PAGE);
+    const parsedPromptsCount = parseBatchPrompts(batchPromptsRaw, config.userPrompt).length;
+    const hasPromptForImageBatch = parsedPromptsCount > 0;
+    const totalImageRequestsEstimate = parsedPromptsCount > 0 ? parsedPromptsCount * Math.max(1, generationsPerPrompt || 1) : Math.max(1, generationsPerPrompt || 1);
 
     const paginate = (pageNumber: number) => setCurrentPage(pageNumber);
 
@@ -630,10 +823,10 @@ const CloudBatchProcessor: React.FC = () => {
                             <div>
                                 <h2 className="text-xl font-bold text-white flex items-center gap-3">
                                     <i className="fas fa-check-double text-blue-500"></i>
-                                    Batch Results Preview
+                                    {t('cloud_preview_title')}
                                 </h2>
                                 <p className="text-sm text-slate-400 mt-1">
-                                    {activePreviewJob.displayId} — {previewItems.length} items
+                                    {activePreviewJob.displayId} — {previewItems.length} {t('items_count')}
                                 </p>
                             </div>
                             <button 
@@ -675,15 +868,15 @@ const CloudBatchProcessor: React.FC = () => {
 
                         <div className="p-6 border-t border-slate-700 bg-slate-800/50 flex flex-col sm:flex-row justify-end gap-4">
                             <div className="mr-auto text-xs text-slate-400 flex items-center">
-                                Tip: Download ZIP to get processed files with original names.
+                                {t('cloud_tip_zip_names')}
                             </div>
                             
                             <Button variant="secondary" onClick={handleZipDownload} icon="fa-file-zipper">
-                                Download ZIP
+                                {t('download_zip')}
                             </Button>
                             
                             <Button variant="success" onClick={handleSaveToGallery} isLoading={isSavingToGallery} icon="fa-save">
-                                Save to Gallery
+                                {t('cloud_save_to_gallery')}
                             </Button>
                         </div>
                     </div>
@@ -724,12 +917,26 @@ const CloudBatchProcessor: React.FC = () => {
                             <>
                                 <Select label={t('resolution_label')} options={RESOLUTIONS} value={config.resolution} onChange={e => setConfig({ ...config, resolution: e.target.value })} />
                                 <Select label={t('ar_label')} options={translatedAspectRatios} value={config.aspectRatio} onChange={e => setConfig({ ...config, aspectRatio: e.target.value })} />
+                                <div>
+                                    <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2 ml-1">{t('generations_per_prompt_label')}</label>
+                                    <input
+                                        type="number"
+                                        min="1"
+                                        max="50"
+                                        value={generationsPerPrompt}
+                                        onChange={(e) => setGenerationsPerPrompt(Math.min(50, Math.max(1, parseInt(e.target.value) || 1)))}
+                                        className="w-full bg-slate-800 border border-slate-700 text-slate-100 rounded-xl px-4 py-3 focus:outline-none focus:ring-2 focus:ring-blue-500/50 placeholder-slate-600"
+                                    />
+                                    <p className="text-[10px] text-slate-500 mt-1 ml-1">
+                                        {formatText(t('generations_per_prompt_hint'), { count: generationsPerPrompt })}
+                                    </p>
+                                </div>
                             </>
                         )}
                         
                         {mode === 'text' && (
                              <div>
-                                <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2 ml-1">Files per Request</label>
+                                <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2 ml-1">{t('files_per_request_label')}</label>
                                 <input 
                                     type="number" 
                                     min="1" 
@@ -738,7 +945,7 @@ const CloudBatchProcessor: React.FC = () => {
                                     onChange={(e) => setFilesPerRequest(Math.max(1, parseInt(e.target.value) || 1))}
                                     className="w-full bg-slate-800 border border-slate-700 text-slate-100 rounded-xl px-4 py-3 focus:outline-none focus:ring-2 focus:ring-blue-500/50 placeholder-slate-600"
                                 />
-                                <p className="text-[10px] text-slate-500 mt-1 ml-1">Example: 2 files merged into 1 prompt.</p>
+                                <p className="text-[10px] text-slate-500 mt-1 ml-1">{t('files_per_request_hint')}</p>
                              </div>
                         )}
 
@@ -758,6 +965,26 @@ const CloudBatchProcessor: React.FC = () => {
                     <div className="h-full flex flex-col gap-4">
                          <TextArea label={t('system_instr_label')} value={config.systemPrompt} onChange={e => setConfig({ ...config, systemPrompt: e.target.value })} className="flex-1" />
                          <TextArea label={t('user_prompt_label')} value={config.userPrompt} onChange={e => setConfig({ ...config, userPrompt: e.target.value })} className="flex-1" placeholder={mode === 'text' ? t('analyze_files_placeholder') : t('image_gen_placeholder')} />
+                                 <TextArea
+                                     label={t('batch_prompts_label')}
+                                     value={batchPromptsRaw}
+                                     onChange={e => setBatchPromptsRaw(e.target.value)}
+                                     className="flex-1"
+                                     placeholder={t('batch_prompts_placeholder')}
+                                 />
+                                 <p className="text-[11px] text-slate-500 -mt-3 ml-1">
+                                     {parsedPromptsCount > 0
+                                         ? mode === 'image'
+                                             ? formatText(t('batch_prompts_hint_image'), {
+                                                 prompts: parsedPromptsCount,
+                                                 generations: Math.max(1, generationsPerPrompt || 1),
+                                                 requests: totalImageRequestsEstimate,
+                                             })
+                                             : formatText(t('batch_prompts_hint_text'), {
+                                                 prompts: parsedPromptsCount,
+                                             })
+                                         : t('batch_prompts_hint_empty')}
+                                 </p>
                     </div>
                 </div>
 
@@ -767,7 +994,7 @@ const CloudBatchProcessor: React.FC = () => {
                              <i className={`fas ${mode === 'image' ? 'fa-images' : 'fa-file-alt'} text-slate-400`}></i>
                              {t('input_files')}
                         </h2>
-                        <span className="text-xs text-slate-400">{mode === 'image' ? images.length : textFiles.length} files</span>
+                        <span className="text-xs text-slate-400">{mode === 'image' ? images.length : textFiles.length} {t('files_queued')}</span>
                     </div>
 
                     {mode === 'image' ? (
@@ -798,7 +1025,7 @@ const CloudBatchProcessor: React.FC = () => {
                                 onFilesSelected={handleFilesSelect} 
                                 multiple 
                                 accept=".csv,.txt,.json,.md,.xml,.js,.ts,.py" 
-                                label="Drag & drop text files" 
+                                label={t('cloud_drag_drop_text_files')} 
                                 className="border-blue-500/30"
                             />
                         ) : (
@@ -828,7 +1055,7 @@ const CloudBatchProcessor: React.FC = () => {
                         variant="success" 
                         onClick={handleCreateBatch} 
                         isLoading={isUploading} 
-                        disabled={(mode === 'image' && images.length === 0) || (mode === 'text' && textFiles.length === 0)} 
+                        disabled={(mode === 'image' && images.length === 0 && !hasPromptForImageBatch) || (mode === 'text' && textFiles.length === 0)} 
                         icon="fa-cloud-upload-alt"
                     >
                         {t('upload_create_btn')}
@@ -855,7 +1082,7 @@ const CloudBatchProcessor: React.FC = () => {
                                         <div className="flex items-center gap-3">
                                             <span className="font-bold text-white truncate" title={job.displayId}>{job.displayId}</span>
                                             <span className={`text-xs px-2 py-0.5 rounded shrink-0 ${isSucceeded ? 'bg-emerald-900 text-emerald-300' : 'bg-slate-700 text-slate-300'}`}>
-                                                {job.status.replace('JOB_STATE_', '')}
+                                                {getLocalizedJobStatus(job.status)}
                                             </span>
                                         </div>
                                         <div className="text-[10px] text-slate-500 mt-1">{job.createdAt} • {job.id.split('/').pop()}</div>
@@ -865,7 +1092,7 @@ const CloudBatchProcessor: React.FC = () => {
                                         {isPending && <Button variant="danger" className="py-1 px-3 text-xs h-8" onClick={() => handleCancelJob(job.id)} icon="fa-stop">{t('cancel')}</Button>}
                                         <Button variant="secondary" className="py-1 px-3 text-xs h-8" onClick={() => checkStatus(job)} icon="fa-sync" isLoading={statusLoadingMap[job.id]} />
                                         <Button variant="secondary" className="py-1 px-3 text-xs h-8" onClick={() => handleDebug(job)} icon="fa-bug" />
-                                        {isSucceeded && <Button variant="primary" className="py-1 px-3 text-xs h-8" onClick={() => handleFetchResults(job)} isLoading={isDownloading} icon="fa-download">Preview</Button>}
+                                        {isSucceeded && <Button variant="primary" className="py-1 px-3 text-xs h-8" onClick={() => handleFetchResults(job)} isLoading={isDownloading} icon="fa-download">{t('cloud_preview_btn')}</Button>}
                                     </div>
                                 </div>
                             );

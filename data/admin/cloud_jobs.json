@@ -1,0 +1,12 @@
+[
+  {
+    "id": "batches/u6tadd2gs0m3lqzhxg760hq88leb6g20b5i4",
+    "displayId": "тест (1-5)",
+    "status": "JOB_STATE_SUCCEEDED",
+    "createdAt": "21:45:29",
+    "timestamp": 1771267525389,
+    "model": "gemini-3-pro-image-preview",
+    "outputFileUri": "files/batch-u6tadd2gs0m3lqzhxg760hq88leb6g20b5i4",
+    "updatedAt": 1771268724122
+  }
+]

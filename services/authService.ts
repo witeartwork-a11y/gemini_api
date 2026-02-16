@@ -131,7 +131,7 @@ export const getUserPreferences = async (userId: string) => {
     } catch (e) {
         console.error('Failed to get user preferences', e);
     }
-    return { language: 'en', theme: 'default' };
+    return {};
 };
 
 export const saveUserPreferences = async (userId: string, preferences: any) => {

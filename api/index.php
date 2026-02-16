@@ -582,6 +582,87 @@ function getCloudJobs($userId) {
     }
 }
 
+function getJobVersion($job) {
+    $raw = $job['updatedAt'] ?? ($job['timestamp'] ?? 0);
+    return is_numeric($raw) ? intval($raw) : 0;
+}
+
+function normalizeJobStatus($status) {
+    $normalized = strtoupper(strval($status ?? ''));
+    if (str_starts_with($normalized, 'JOB_STATE_')) {
+        return substr($normalized, 10);
+    }
+    return $normalized;
+}
+
+function getJobStatusRank($status) {
+    $normalized = normalizeJobStatus($status);
+    $rankMap = [
+        'STATE_UNSPECIFIED' => 0,
+        'UNSPECIFIED' => 0,
+        'PENDING' => 1,
+        'RUNNING' => 2,
+        'SUCCEEDED' => 4,
+        'FAILED' => 4,
+        'CANCELLED' => 4,
+    ];
+    return $rankMap[$normalized] ?? 0;
+}
+
+function mergeCloudJobsList($existingJobs, $incomingJobs) {
+    $mergedById = [];
+
+    foreach ($existingJobs as $job) {
+        if (!is_array($job) || empty($job['id'])) continue;
+        $mergedById[$job['id']] = $job;
+    }
+
+    foreach ($incomingJobs as $incoming) {
+        if (!is_array($incoming) || empty($incoming['id'])) continue;
+
+        $id = $incoming['id'];
+        $existing = $mergedById[$id] ?? null;
+
+        if (!$existing) {
+            $mergedById[$id] = $incoming;
+            continue;
+        }
+
+        $existingVersion = getJobVersion($existing);
+        $incomingVersion = getJobVersion($incoming);
+
+        if ($incomingVersion > $existingVersion) {
+            $mergedById[$id] = array_merge($existing, $incoming);
+            continue;
+        }
+
+        if ($incomingVersion < $existingVersion) {
+            continue;
+        }
+
+        $mergedJob = array_merge($existing, $incoming);
+
+        if (getJobStatusRank($existing['status'] ?? '') > getJobStatusRank($incoming['status'] ?? '')) {
+            $mergedJob['status'] = $existing['status'] ?? ($incoming['status'] ?? '');
+        }
+
+        if (empty($mergedJob['outputFileUri'])) {
+            $mergedJob['outputFileUri'] = $existing['outputFileUri'] ?? ($incoming['outputFileUri'] ?? null);
+        }
+
+        $mergedById[$id] = $mergedJob;
+    }
+
+    $result = array_values($mergedById);
+    usort($result, function ($a, $b) {
+        $aTs = intval($a['timestamp'] ?? 0);
+        $bTs = intval($b['timestamp'] ?? 0);
+        return $bTs <=> $aTs;
+    });
+
+    return $result;
+}
+
 function saveCloudJobs($userId) {
     try {
         $data = getJsonInput();
@@ -592,8 +673,16 @@ function saveCloudJobs($userId) {
         }
 
         $jobsFile = $userDir . '/cloud_jobs.json';
-        $payload = is_array($data) ? $data : [];
-        file_put_contents($jobsFile, json_encode($payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+        $incoming = is_array($data) ? $data : [];
+
+        $existing = [];
+        if (file_exists($jobsFile)) {
+            $loaded = json_decode(file_get_contents($jobsFile), true);
+            $existing = is_array($loaded) ? $loaded : [];
+        }
+
+        $merged = mergeCloudJobsList($existing, $incoming);
+        file_put_contents($jobsFile, json_encode($merged, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
 
         echo json_encode(['success' => true]);
     } catch (Exception $e) {
@@ -945,25 +1034,26 @@ function deleteUser($userId) {
 function getUserPreferences($userId) {
     $usersFile = DATA_DIR . '/users.json';
     if (!file_exists($usersFile)) {
-        echo json_encode(['language' => 'en', 'theme' => 'default']);
+        echo json_encode(new stdClass());
         return;
     }
     
     $users = json_decode(file_get_contents($usersFile), true) ?? [];
     foreach ($users as $user) {
         if ($user['id'] === $userId) {
-            $preferences = $user['preferences'] ?? ['language' => 'en', 'theme' => 'default'];
+            $preferences = $user['preferences'] ?? [];
             echo json_encode($preferences);
             return;
         }
     }
     
     // User not found, return defaults
-    echo json_encode(['language' => 'en', 'theme' => 'default']);
+    echo json_encode(new stdClass());
 }
 
 function saveUserPreferences($userId) {
     $data = getJsonInput();
+    $mergedPreferences = [];
     
     $usersFile = DATA_DIR . '/users.json';
     $users = [];
@@ -974,7 +1064,10 @@ function saveUserPreferences($userId) {
     $found = false;
     foreach ($users as &$user) {
         if ($user['id'] === $userId) {
-            $user['preferences'] = $data;
+            $existingPreferences = (isset($user['preferences']) && is_array($user['preferences'])) ? $user['preferences'] : [];
+            $incomingPreferences = is_array($data) ? $data : [];
+            $user['preferences'] = array_merge($existingPreferences, $incomingPreferences);
+            $mergedPreferences = $user['preferences'];
             $found = true;
             break;
         }
@@ -987,7 +1080,7 @@ function saveUserPreferences($userId) {
     }
     
     file_put_contents($usersFile, json_encode($users, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE));
-    echo json_encode(['success' => true, 'preferences' => $data]);
+    echo json_encode(['success' => true, 'preferences' => $mergedPreferences]);
 }
 
 function loginUser() {

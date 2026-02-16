@@ -81,6 +81,7 @@ export interface CloudBatchJob {
     status: string; // "STATE_UNSPECIFIED" | "PENDING" | "RUNNING" | "SUCCEEDED" | "FAILED" | "CANCELLED"
     createdAt: string; // Display string
     timestamp?: number; // Raw timestamp for aging logic
+    updatedAt?: number; // Last local update timestamp (for merge/versioning)
     model: string;
     outputFileUri?: string;
     error?: string;

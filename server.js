@@ -23,6 +23,74 @@ fs.ensureDirSync(DATA_DIR);
 
 const getUserDir = (userId) => path.join(DATA_DIR, userId);
 
+const getJobVersion = (job) => {
+    const raw = job?.updatedAt ?? job?.timestamp ?? 0;
+    const version = Number(raw);
+    return Number.isFinite(version) ? version : 0;
+};
+
+const normalizeJobStatus = (status) => {
+    const text = String(status || '').toUpperCase();
+    return text.startsWith('JOB_STATE_') ? text.replace('JOB_STATE_', '') : text;
+};
+
+const getJobStatusRank = (status) => {
+    const normalized = normalizeJobStatus(status);
+    const rankMap = {
+        STATE_UNSPECIFIED: 0,
+        UNSPECIFIED: 0,
+        PENDING: 1,
+        RUNNING: 2,
+        SUCCEEDED: 4,
+        FAILED: 4,
+        CANCELLED: 4,
+    };
+    return rankMap[normalized] ?? 0;
+};
+
+const mergeCloudJobs = (existingJobs, incomingJobs) => {
+    const merged = new Map();
+
+    for (const job of existingJobs) {
+        if (!job?.id) continue;
+        merged.set(job.id, job);
+    }
+
+    for (const incoming of incomingJobs) {
+        if (!incoming?.id) continue;
+
+        const existing = merged.get(incoming.id);
+        if (!existing) {
+            merged.set(incoming.id, incoming);
+            continue;
+        }
+
+        const existingVersion = getJobVersion(existing);
+        const incomingVersion = getJobVersion(incoming);
+
+        if (incomingVersion > existingVersion) {
+            merged.set(incoming.id, { ...existing, ...incoming });
+            continue;
+        }
+
+        if (incomingVersion < existingVersion) {
+            continue;
+        }
+
+        const mergedJob = { ...existing, ...incoming };
+        if (getJobStatusRank(existing.status) > getJobStatusRank(incoming.status)) {
+            mergedJob.status = existing.status;
+        }
+        if (!mergedJob.outputFileUri) {
+            mergedJob.outputFileUri = existing.outputFileUri || incoming.outputFileUri;
+        }
+
+        merged.set(incoming.id, mergedJob);
+    }
+
+    return Array.from(merged.values()).sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+};
+
 // --- NEW: Serve Static Files (Optimized Image Delivery) ---
 // FIX: Using RegExp for routing to avoid path-to-regexp syntax errors in Express 5
 // Captures /api/files/{userId}/{rest_of_path}
@@ -447,12 +515,20 @@ app.get('/api/cloud-jobs/:userId', async (req, res) => {
 app.post('/api/cloud-jobs/:userId', async (req, res) => {
     try {
         const { userId } = req.params;
-        const jobs = req.body;
+        const incomingJobs = Array.isArray(req.body) ? req.body : [];
         const userDir = getUserDir(userId);
         await fs.ensureDir(userDir);
         const jobsFile = path.join(userDir, 'cloud_jobs.json');
+
+        let existingJobs = [];
+        if (await fs.pathExists(jobsFile)) {
+            const loaded = await fs.readJson(jobsFile);
+            existingJobs = Array.isArray(loaded) ? loaded : [];
+        }
+
+        const mergedJobs = mergeCloudJobs(existingJobs, incomingJobs);
         
-        await fs.writeJson(jobsFile, jobs, { spaces: 2 });
+        await fs.writeJson(jobsFile, mergedJobs, { spaces: 2 });
         res.json({ success: true });
     } catch (e) {
         res.status(500).json({ error: e.message });
