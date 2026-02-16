@@ -2,20 +2,10 @@
 import { ModelType, HarmCategory, HarmBlockThreshold, MediaResolution } from "./types";
 
 export const MODELS = [
-    // Google Gemini Models
     { value: ModelType.GEMINI_3_PRO, label: '3 Pro', provider: 'google' },
     { value: ModelType.GEMINI_3_PRO_IMAGE, label: '3 Pro image', provider: 'google' },
     { value: ModelType.GEMINI_3_FLASH, label: '3 Flash', provider: 'google' },
-    { value: ModelType.GEMINI_2_5_FLASH, label: '2.5 Flash', provider: 'google' },
     { value: ModelType.GEMINI_2_5_FLASH_IMAGE, label: '2.5 Flash image', provider: 'google' },
-    
-    // NeuroAPI Models
-    { value: ModelType.GPT_5_MINI, label: 'GPT-5 Mini', provider: 'neuroapi' },
-    { value: ModelType.GPT_5, label: 'GPT-5', provider: 'neuroapi' },
-    { value: ModelType.GPT_4O, label: 'GPT-4o', provider: 'neuroapi' },
-    { value: ModelType.CLAUDE_3_5_SONNET, label: 'Claude 3.5 Sonnet', provider: 'neuroapi' },
-    { value: ModelType.GPT_IMAGE_1, label: 'GPT Image-1', provider: 'neuroapi' },
-    { value: ModelType.DALL_E_3, label: 'DALL-E 3', provider: 'neuroapi' },
 ];
 
 export const MODEL_PRICING: {[key: string]: { input: number, output: number, perImage?: number }} = {
@@ -29,17 +19,8 @@ export const MODEL_PRICING: {[key: string]: { input: number, output: number, per
     // Gemini 3 Flash: $0.50 (Input) / $3 (Output) per 1M tokens
     [ModelType.GEMINI_3_FLASH]: { input: 0.0000005, output: 0.000003 },
     
-    // Gemini 2.5: Count tokens only (Cost = 0)
-    [ModelType.GEMINI_2_5_FLASH]: { input: 0, output: 0 },
+    // Gemini 2.5 Flash Image: Count tokens only (Cost = 0)
     [ModelType.GEMINI_2_5_FLASH_IMAGE]: { input: 0, output: 0, perImage: 0 },
-    
-    // NeuroAPI models (pricing may vary, using approximate values)
-    [ModelType.GPT_5_MINI]: { input: 0.0000001, output: 0.0000005 },
-    [ModelType.GPT_5]: { input: 0.000002, output: 0.00001 },
-    [ModelType.GPT_4O]: { input: 0.000005, output: 0.000015 },
-    [ModelType.CLAUDE_3_5_SONNET]: { input: 0.000003, output: 0.000015 },
-    [ModelType.GPT_IMAGE_1]: { input: 0, output: 0, perImage: 0.04 },
-    [ModelType.DALL_E_3]: { input: 0, output: 0, perImage: 0.08 },
 };
 
 export const ASPECT_RATIOS = [

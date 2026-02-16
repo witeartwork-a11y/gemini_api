@@ -4,7 +4,8 @@ import { Select, TextArea, RangeInput } from '../components/ui/InputComponents';
 import Button from '../components/ui/Button';
 import FileUploader from '../components/ui/FileUploader';
 import ImageViewer from '../components/ui/ImageViewer';
-import { generateContent, downloadBase64Image, fileToBase64 } from '../services/geminiService';
+import TextViewer from '../components/ui/TextViewer';
+import { generateContent, downloadBase64Image, downloadTextFile, fileToBase64 } from '../services/geminiService';
 import { saveGeneration, getUserHistory, deleteGeneration } from '../services/historyService';
 import { getCurrentUser } from '../services/authService';
 import { ProcessingConfig, ModelType, HistoryItem } from '../types';
@@ -63,6 +64,7 @@ const SingleGenerator: React.FC = () => {
     const [viewingImage, setViewingImage] = useState<string | null>(null);
     const [viewingPrompt, setViewingPrompt] = useState<string | undefined>(undefined);
     const [viewingMeta, setViewingMeta] = useState<{date?: number, resolution?: string, inputCount?: number} | null>(null);
+    const [viewingText, setViewingText] = useState<{ text: string; prompt?: string; date?: number | string; title?: string } | null>(null);
     
     // Timer State
     const [elapsedTime, setElapsedTime] = useState<number>(0);
@@ -72,9 +74,6 @@ const SingleGenerator: React.FC = () => {
     const [recentHistory, setRecentHistory] = useState<HistoryItem[]>([]);
 
     const abortControllerRef = useRef<AbortController | null>(null);
-
-    // Filter for Image Models or Multimodal Models that handle vision/image tasks
-    const availableModels = MODELS.filter(m => m.value.includes('image') || m.value === ModelType.GEMINI_3_FLASH);
 
     // Timer Logic
     useEffect(() => {
@@ -321,6 +320,16 @@ const SingleGenerator: React.FC = () => {
                     onDownload={() => viewingImage && downloadBase64Image(viewingImage, `image-${Date.now()}.png`)}
                 />
             )}
+            {viewingText && (
+                <TextViewer
+                    text={viewingText.text}
+                    prompt={viewingText.prompt}
+                    date={viewingText.date}
+                    title={viewingText.title}
+                    onClose={() => setViewingText(null)}
+                    onDownload={() => downloadTextFile(viewingText.text, `text-${Date.now()}.txt`)}
+                />
+            )}
 
             <div className="grid grid-cols-1 xl:grid-cols-12 gap-8 relative">
                 <div className="xl:col-span-4 space-y-6">
@@ -348,7 +357,7 @@ const SingleGenerator: React.FC = () => {
                         <div className="space-y-5 flex-1 overflow-y-auto custom-scrollbar pr-1">
                             <Select 
                                 label={t('model_label')}
-                                options={availableModels} 
+                                options={MODELS} 
                                 value={config.model}
                                 onChange={e => setConfig({ ...config, model: e.target.value as ModelType })}
                             />
@@ -540,11 +549,19 @@ const SingleGenerator: React.FC = () => {
                                 )}
                             </div>
 
-                            {result?.image && (
+                            {(result?.image || result?.text) && (
                                 <Button 
                                     variant="secondary" 
                                     className="px-3 py-1.5 text-xs h-8 border-slate-600 bg-slate-800/80"
-                                    onClick={() => result.image && downloadBase64Image(result.image, `gemini-gen-${Date.now()}.png`)}
+                                    onClick={() => {
+                                        if (result?.image) {
+                                            downloadBase64Image(result.image, `gemini-gen-${Date.now()}.png`);
+                                            return;
+                                        }
+                                        if (result?.text) {
+                                            downloadTextFile(result.text, `gemini-gen-${Date.now()}.txt`);
+                                        }
+                                    }}
                                     icon="fa-download"
                                 >
                                     {t('download_btn')}
@@ -612,7 +629,15 @@ const SingleGenerator: React.FC = () => {
                                     </div>
                                 )}
                                 {result.text && (
-                                    <div className="mx-4 mb-4 p-4 bg-slate-800/50 rounded-2xl border border-slate-700/50 text-slate-200 text-sm leading-relaxed whitespace-pre-wrap shadow-inner max-h-40 overflow-y-auto custom-scrollbar shrink-0">
+                                    <div
+                                        className="mx-4 mb-4 p-4 bg-slate-800/50 rounded-2xl border border-slate-700/50 text-slate-200 text-sm leading-relaxed whitespace-pre-wrap shadow-inner max-h-40 overflow-y-auto custom-scrollbar shrink-0 cursor-pointer hover:border-slate-600 transition-colors"
+                                        onClick={() => setViewingText({
+                                            text: result.text || '',
+                                            prompt: config.userPrompt,
+                                            date: Date.now(),
+                                            title: 'Current Result Text'
+                                        })}
+                                    >
                                         <h3 className="text-xs font-bold text-slate-500 uppercase mb-2 tracking-wider">Model Output</h3>
                                         {result.text}
                                     </div>
@@ -662,7 +687,19 @@ const SingleGenerator: React.FC = () => {
                                                 }}
                                             />
                                         ) : (
-                                            <div className="w-full h-full flex items-center justify-center text-slate-600 text-xs text-center p-2">
+                                            <div
+                                                className="w-full h-full flex items-center justify-center text-slate-600 text-xs text-center p-2 cursor-pointer"
+                                                onClick={() => {
+                                                    if (item.resultText) {
+                                                        setViewingText({
+                                                            text: item.resultText,
+                                                            prompt: item.prompt,
+                                                            date: item.timestamp,
+                                                            title: item.model
+                                                        });
+                                                    }
+                                                }}
+                                            >
                                                 Text Only
                                             </div>
                                         )}
@@ -690,6 +727,31 @@ const SingleGenerator: React.FC = () => {
                                                         title="View"
                                                     >
                                                         <i className="fas fa-eye text-xs"></i>
+                                                    </button>
+                                                </div>
+                                            )}
+                                            {!fullImgSrc && item.resultText && (
+                                                <div className="flex gap-2">
+                                                    <button
+                                                        onClick={() => {
+                                                            setViewingText({
+                                                                text: item.resultText || '',
+                                                                prompt: item.prompt,
+                                                                date: item.timestamp,
+                                                                title: item.model
+                                                            });
+                                                        }}
+                                                        className="w-8 h-8 rounded-full bg-slate-700 text-white flex items-center justify-center hover:bg-slate-600 transition-colors"
+                                                        title="View"
+                                                    >
+                                                        <i className="fas fa-eye text-xs"></i>
+                                                    </button>
+                                                    <button
+                                                        onClick={() => downloadTextFile(item.resultText || '', `history-${item.id}.txt`)}
+                                                        className="w-8 h-8 rounded-full bg-emerald-700 text-white flex items-center justify-center hover:bg-emerald-600 transition-colors"
+                                                        title="Download"
+                                                    >
+                                                        <i className="fas fa-download text-xs"></i>
                                                     </button>
                                                 </div>
                                             )}

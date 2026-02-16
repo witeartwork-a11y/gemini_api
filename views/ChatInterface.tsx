@@ -16,7 +16,7 @@ const ChatInterface: React.FC = () => {
     const [isLoading, setIsLoading] = useState(false);
     const [isImageMode, setIsImageMode] = useState(false);
     const [viewingImage, setViewingImage] = useState<string | null>(null);
-    const [selectedModel, setSelectedModel] = useState<ModelType>(ModelType.GEMINI_2_5_FLASH);
+    const [selectedModel, setSelectedModel] = useState<ModelType>(ModelType.GEMINI_3_FLASH);
 
     const scrollRef = useRef<HTMLDivElement>(null);
     const fileInputRef = useRef<HTMLInputElement>(null);
@@ -66,7 +66,7 @@ const ChatInterface: React.FC = () => {
             id: Date.now().toString(),
             title: t('chat_new'),
             messages: [],
-            model: ModelType.GEMINI_2_5_FLASH,
+            model: ModelType.GEMINI_3_FLASH,
             lastUpdated: Date.now()
         };
         setSessions(prev => [newSession, ...prev]);

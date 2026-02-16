@@ -2,9 +2,10 @@
 import React, { useState, useEffect } from 'react';
 import { getUserHistory, deleteGeneration } from '../services/historyService';
 import { getCurrentUser } from '../services/authService';
-import { downloadBase64Image } from '../services/geminiService';
+import { downloadBase64Image, downloadTextFile } from '../services/geminiService';
 import { HistoryItem } from '../types';
 import ImageViewer from '../components/ui/ImageViewer';
+import TextViewer from '../components/ui/TextViewer';
 import Button from '../components/ui/Button';
 
 type FilterType = 'all' | 'single' | 'batch' | 'cloud';
@@ -43,6 +44,7 @@ const GalleryView: React.FC = () => {
 
     const handleDownload = async (item: HistoryItem) => {
         const filename = `${item.dateStr}_${item.type}_${item.id}.png`;
+        const textFilename = `${item.dateStr}_${item.type}_${item.id}.txt`;
         
         if (item.imageUrl) {
             try {
@@ -61,6 +63,8 @@ const GalleryView: React.FC = () => {
             }
         } else if (item.image) {
             downloadBase64Image(item.image, filename);
+        } else if (item.resultText) {
+            downloadTextFile(item.resultText, textFilename);
         }
     };
 
@@ -104,6 +108,16 @@ const GalleryView: React.FC = () => {
                     prompt={viewingItem.prompt}                    date={viewingItem.timestamp}
                     resolution={viewingItem.outputResolution}
                     inputImagesCount={viewingItem.inputImageInfo?.count}                    onClose={() => setViewingItem(null)} 
+                    onDownload={() => handleDownload(viewingItem)}
+                />
+            )}
+            {viewingItem && !(viewingItem.imageUrl || viewingItem.image) && viewingItem.resultText && (
+                <TextViewer
+                    text={viewingItem.resultText}
+                    prompt={viewingItem.prompt}
+                    title="Text Output"
+                    date={viewingItem.timestamp}
+                    onClose={() => setViewingItem(null)}
                     onDownload={() => handleDownload(viewingItem)}
                 />
             )}
@@ -192,7 +206,10 @@ const GalleryView: React.FC = () => {
                                     alt="Generated Content"
                                 />
                             ) : (
-                                <div className="p-4 text-xs text-slate-500 h-full flex items-center justify-center text-center">
+                                <div
+                                    className="p-4 text-xs text-slate-500 h-full flex items-center justify-center text-center cursor-pointer"
+                                    onClick={() => item.resultText && setViewingItem(item)}
+                                >
                                     <i className="fas fa-file-alt text-2xl mb-2 block"></i>
                                     {item.resultText ? "Text Output" : "No Media"}
                                 </div>
@@ -200,7 +217,7 @@ const GalleryView: React.FC = () => {
 
                             {/* Hover Overlay with Actions */}
                             <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-2 pointer-events-none">
-                                {(item.imageUrl || item.image) && (
+                                {(item.imageUrl || item.image || item.resultText) && (
                                     <>
                                         <button 
                                             onClick={() => setViewingItem(item)}

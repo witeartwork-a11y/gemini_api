@@ -1,5 +1,5 @@
 import OpenAI from 'openai';
-import { ProcessingConfig, ModelType, ChatMessage, ApiProvider } from "../types";
+import { ProcessingConfig, ModelType, ChatMessage } from "../types";
 
 const NEUROAPI_BASE_URL = 'https://neuroapi.host/v1';
 
@@ -46,18 +46,7 @@ const blobToDataURI = (blob: Blob): Promise<string> => {
  * Check if model is image generation model
  */
 const isImageGenerationModel = (model: string): boolean => {
-    // Direct image generation models
-    if (model === ModelType.GPT_IMAGE_1 || model === ModelType.DALL_E_3) {
-        return true;
-    }
-    
-    // Gemini image models (through NeuroAPI aggregator)
-    // These models have 'image' in their name and generate images
-    if (model.includes('image') && (model.includes('gemini') || model.includes('pro'))) {
-        return true;
-    }
-    
-    return false;
+    return model.includes('image');
 };
 
 /**
@@ -388,7 +377,7 @@ export const sendChatMessage = async (
     let effectiveModel = model;
     if (isImageGenerationMode) {
         // Switch to image model if in image mode
-        effectiveModel = ModelType.GPT_IMAGE_1;
+        effectiveModel = ModelType.GEMINI_2_5_FLASH_IMAGE;
     }
 
     const isImageModel = isImageGenerationModel(effectiveModel);
