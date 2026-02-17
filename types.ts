@@ -54,6 +54,10 @@ export interface BatchFile {
     file: File;
     preview: string;
     status: 'pending' | 'processing' | 'completed' | 'failed';
+    batchPrompt?: string;
+    promptIndex?: number;
+    generationIndex?: number;
+    isVariantTask?: boolean;
     resultImage?: string; // base64
     resultText?: string;
     error?: string;
@@ -63,6 +67,8 @@ export interface BatchTextGroup {
     id: string;
     files: File[];
     status: 'pending' | 'processing' | 'completed' | 'failed';
+    batchPrompt?: string;
+    promptIndex?: number;
     resultText?: string;
     error?: string;
 }

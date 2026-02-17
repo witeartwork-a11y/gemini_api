@@ -20,6 +20,11 @@ type BatchMode = 'image' | 'text';
 
 const BatchProcessor: React.FC = () => {
     const { t } = useLanguage();
+    const formatText = (template: string, params: Record<string, string | number>) => {
+        return Object.entries(params).reduce((acc, [key, value]) => {
+            return acc.replaceAll(`{${key}}`, String(value));
+        }, template);
+    };
     
     const translatedAspectRatios = [
         { value: 'Auto', label: t('ar_auto') },
@@ -56,10 +61,12 @@ const BatchProcessor: React.FC = () => {
     const [pendingTextFiles, setPendingTextFiles] = useState<File[]>([]);
     const [filesPerRequest, setFilesPerRequest] = useState<number>(1);
     const [textGroups, setTextGroups] = useState<BatchTextGroup[]>([]);
+    const [generationsPerPrompt, setGenerationsPerPrompt] = useState<number>(1);
 
     const [isBatchRunning, setIsBatchRunning] = useState(false);
     const [viewingImage, setViewingImage] = useState<string | null>(null);
     const [compareData, setCompareData] = useState<{original: string, result: string} | null>(null);
+    const [showErrorsOnly, setShowErrorsOnly] = useState(false);
 
     // Load state
     useEffect(() => {
@@ -123,46 +130,129 @@ const BatchProcessor: React.FC = () => {
         setTextGroups(prev => prev.filter(g => g.id !== id));
     };
 
+    const parseBatchPrompts = (rawPrompts: string): string[] => {
+        const trimmedRaw = rawPrompts.trim();
+
+        if (trimmedRaw) {
+            const separatorRegex = /^\s*---\s*$/m;
+
+            if (separatorRegex.test(trimmedRaw)) {
+                const fromBlocks = trimmedRaw
+                    .split(/\n\s*---\s*\n/g)
+                    .map(prompt => prompt.trim())
+                    .filter(Boolean);
+
+                if (fromBlocks.length > 0) {
+                    return fromBlocks;
+                }
+            }
+
+            const fromLines = trimmedRaw
+                .split('\n')
+                .map(prompt => prompt.trim())
+                .filter(Boolean);
+
+            if (fromLines.length > 0) {
+                return fromLines;
+            }
+        }
+
+        return [];
+    };
+
     const runBatch = async () => {
         setIsBatchRunning(true);
+        const parsedPrompts = parseBatchPrompts(config.userPrompt);
+        const promptsForBatch = parsedPrompts.length > 0 ? parsedPrompts : [''];
         
         if (mode === 'image') {
-            const pendingFiles = files.filter(f => f.status === 'pending' || f.status === 'failed');
+            const pendingFiles = files.filter(f => (f.status === 'pending' || f.status === 'failed') && (f.file.size > 0 || f.preview.startsWith('blob:')));
+            const copiesPerPrompt = Math.max(1, generationsPerPrompt || 1);
+            const shouldExpandVariants = promptsForBatch.length > 1 || copiesPerPrompt > 1;
 
-            for (const batchFile of pendingFiles) {
+            let queueToProcess = pendingFiles;
+            const expandableSources = pendingFiles.filter(f => !f.isVariantTask);
+
+            if (shouldExpandVariants && expandableSources.length > 0) {
+                const makeVariantName = (name: string, promptIndex: number, generationIndex: number) => {
+                    const dotIndex = name.lastIndexOf('.');
+                    const baseName = dotIndex > 0 ? name.substring(0, dotIndex) : name;
+                    const extension = dotIndex > 0 ? name.substring(dotIndex) : '';
+                    const promptSuffix = promptsForBatch.length > 1 ? `_p${promptIndex}` : '';
+                    const genSuffix = copiesPerPrompt > 1 ? `_g${generationIndex}` : '';
+                    return `${baseName}${promptSuffix}${genSuffix}${extension}`;
+                };
+
+                const expandedVariants: BatchFile[] = expandableSources.flatMap(source => {
+                    return promptsForBatch.flatMap((prompt, promptIdx) => {
+                        return Array.from({ length: copiesPerPrompt }, (_, generationIdx) => {
+                            const variantName = makeVariantName(source.file.name, promptIdx + 1, generationIdx + 1);
+                            const variantFile = new File([source.file], variantName, { type: source.file.type });
+
+                            return {
+                                id: Math.random().toString(36).substring(2, 11),
+                                file: variantFile,
+                                preview: source.preview,
+                                status: 'pending',
+                                batchPrompt: prompt,
+                                promptIndex: promptIdx + 1,
+                                generationIndex: generationIdx + 1,
+                                isVariantTask: true,
+                            };
+                        });
+                    });
+                });
+
+                const sourceIds = new Set(expandableSources.map(f => f.id));
+                const existingVariants = pendingFiles.filter(f => f.isVariantTask);
+                queueToProcess = [...existingVariants, ...expandedVariants];
+
+                setFiles(prev => [
+                    ...prev.filter(f => !sourceIds.has(f.id)),
+                    ...prev.filter(f => sourceIds.has(f.id) && f.status === 'completed'),
+                    ...queueToProcess,
+                ]);
+            }
+
+            for (const batchFile of queueToProcess) {
                 if (batchFile.file.size === 0 && !batchFile.preview.startsWith('blob:')) continue; 
 
                 setFiles(prev => prev.map(f => f.id === batchFile.id ? { ...f, status: 'processing' } : f));
 
                 try {
-                    const result = await generateContent(config, batchFile.file ? [batchFile.file] : []);
+                    const taskConfig: ProcessingConfig = {
+                        ...config,
+                        userPrompt: batchFile.batchPrompt ?? config.userPrompt,
+                    };
+
+                    const result = await generateContent(taskConfig, batchFile.file ? [batchFile.file] : []);
                     
                     if (user && result.image) {
                         let cost = 0;
                         // @ts-ignore
-                        if (result.usageMetadata && MODEL_PRICING[config.model]) {
+                        if (result.usageMetadata && MODEL_PRICING[taskConfig.model]) {
                              // @ts-ignore
-                             const p = MODEL_PRICING[config.model];
+                             const p = MODEL_PRICING[taskConfig.model];
                              // @ts-ignore
                              cost = (result.usageMetadata.promptTokenCount * p.input) + (result.usageMetadata.candidatesTokenCount * p.output);
                         }
-                        if (result.image && MODEL_PRICING[config.model]?.perImage) {
-                            cost += MODEL_PRICING[config.model]!.perImage!;
+                        if (result.image && MODEL_PRICING[taskConfig.model]?.perImage) {
+                            cost += MODEL_PRICING[taskConfig.model]!.perImage!;
                         }
 
                         await saveGeneration(
                             user.id, 
                             'batch', 
-                            config.model, 
-                            config.userPrompt, 
+                            taskConfig.model, 
+                            taskConfig.userPrompt, 
                             result.image, 
                             result.text,
-                            config.aspectRatio,
+                            taskConfig.aspectRatio,
                             // @ts-ignore
                             result.usageMetadata,
                             cost,
                             { count: 1 },
-                            config.resolution
+                            taskConfig.resolution
                         );
                     }
 
@@ -190,12 +280,16 @@ const BatchProcessor: React.FC = () => {
                     chunks.push(pendingTextFiles.slice(i, i + filesPerRequest));
                 }
                 
-                // Create Groups in UI state
-                const newGroups: BatchTextGroup[] = chunks.map(chunk => ({
-                    id: Math.random().toString(36).substring(7),
-                    files: chunk,
-                    status: 'pending'
-                }));
+                // Create Groups in UI state (chunk × prompt)
+                const newGroups: BatchTextGroup[] = chunks.flatMap(chunk => {
+                    return promptsForBatch.map((prompt, promptIndex) => ({
+                        id: Math.random().toString(36).substring(7),
+                        files: chunk,
+                        status: 'pending',
+                        batchPrompt: prompt,
+                        promptIndex: promptIndex + 1,
+                    }));
+                });
                 
                 setTextGroups(prev => [...prev, ...newGroups]);
                 setPendingTextFiles([]); // Clear staging area
@@ -216,14 +310,19 @@ const BatchProcessor: React.FC = () => {
                         }
 
                         // Send to API
-                        const result = await generateContent(config, [], textFilesData);
+                        const taskConfig: ProcessingConfig = {
+                            ...config,
+                            userPrompt: group.batchPrompt ?? config.userPrompt,
+                        };
+
+                        const result = await generateContent(taskConfig, [], textFilesData);
 
                         if (user) {
                             let cost = 0;
                             // @ts-ignore
-                            if (result.usageMetadata && MODEL_PRICING[config.model]) {
+                            if (result.usageMetadata && MODEL_PRICING[taskConfig.model]) {
                                 // @ts-ignore
-                                const p = MODEL_PRICING[config.model];
+                                const p = MODEL_PRICING[taskConfig.model];
                                 // @ts-ignore
                                 cost = (result.usageMetadata.promptTokenCount * p.input) + (result.usageMetadata.candidatesTokenCount * p.output);
                             }
@@ -231,11 +330,11 @@ const BatchProcessor: React.FC = () => {
                             await saveGeneration(
                                 user.id, 
                                 'batch', 
-                                config.model, 
-                                config.userPrompt, 
+                                taskConfig.model, 
+                                taskConfig.userPrompt, 
                                 undefined, 
                                 result.text,
-                                config.aspectRatio,
+                                taskConfig.aspectRatio,
                                 // @ts-ignore
                                 result.usageMetadata,
                                 cost
@@ -268,17 +367,22 @@ const BatchProcessor: React.FC = () => {
                             const content = await fileToText(file);
                             textFilesData.push({ name: file.name, content });
                         }
-                        const result = await generateContent(config, [], textFilesData);
+                        const taskConfig: ProcessingConfig = {
+                            ...config,
+                            userPrompt: group.batchPrompt ?? config.userPrompt,
+                        };
+
+                        const result = await generateContent(taskConfig, [], textFilesData);
                         if (user) {
                              let cost = 0;
                             // @ts-ignore
-                            if (result.usageMetadata && MODEL_PRICING[config.model]) {
+                            if (result.usageMetadata && MODEL_PRICING[taskConfig.model]) {
                                 // @ts-ignore
-                                const p = MODEL_PRICING[config.model];
+                                const p = MODEL_PRICING[taskConfig.model];
                                 // @ts-ignore
                                 cost = (result.usageMetadata.promptTokenCount * p.input) + (result.usageMetadata.candidatesTokenCount * p.output);
                             }
-                            await saveGeneration(user.id, 'batch', config.model, config.userPrompt, undefined, result.text, config.aspectRatio, 
+                            await saveGeneration(user.id, 'batch', taskConfig.model, taskConfig.userPrompt, undefined, result.text, taskConfig.aspectRatio, 
                                 // @ts-ignore
                                 result.usageMetadata, cost
                             );
@@ -374,8 +478,14 @@ const BatchProcessor: React.FC = () => {
     };
 
     // Separate lists for UI
+    const parsedPrompts = parseBatchPrompts(config.userPrompt);
+    const promptsCount = Math.max(1, parsedPrompts.length);
+
     const pendingList = mode === 'image' 
-        ? files.filter(f => f.status === 'pending' || f.status === 'processing' || f.status === 'failed')
+        ? files.filter(f => {
+            const isInQueue = f.status === 'pending' || f.status === 'processing' || f.status === 'failed';
+            return isInQueue && (!showErrorsOnly || f.status === 'failed');
+        })
         : []; // For text, we handle staging in `pendingTextFiles` and processing in `textGroups`
 
     const completedList = mode === 'image' 
@@ -385,6 +495,9 @@ const BatchProcessor: React.FC = () => {
     const hasItemsToProcess = mode === 'image' 
         ? files.some(f => f.status === 'pending' || f.status === 'failed')
         : (pendingTextFiles.length > 0 || textGroups.some(g => g.status === 'pending' || g.status === 'failed'));
+
+    const localImageRequestsEstimate = files.filter(f => f.status === 'pending' || f.status === 'failed').length * promptsCount * Math.max(1, generationsPerPrompt || 1);
+    const localTextGroupsEstimate = (pendingTextFiles.length > 0 ? Math.ceil(pendingTextFiles.length / Math.max(1, filesPerRequest)) : 0) * promptsCount;
 
     return (
         <div className="space-y-8 relative max-w-7xl mx-auto pb-12">
@@ -449,12 +562,28 @@ const BatchProcessor: React.FC = () => {
                                     value={config.aspectRatio}
                                     onChange={e => setConfig({ ...config, aspectRatio: e.target.value })}
                                 />
+                                <div>
+                                    <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2 ml-1">{t('generations_per_prompt_label')}</label>
+                                    <NumberStepper
+                                        value={generationsPerPrompt}
+                                        onChange={setGenerationsPerPrompt}
+                                        min={1}
+                                        max={10}
+                                        inputClassName="bg-slate-800/50 border-slate-700/50 text-white focus:ring-blue-500/50"
+                                        buttonClassName="bg-slate-800/50 border-slate-700/50 hover:bg-slate-700/60"
+                                        decreaseAriaLabel="Decrease generations per prompt"
+                                        increaseAriaLabel="Increase generations per prompt"
+                                    />
+                                    <p className="text-[10px] text-slate-500 mt-1 ml-1">
+                                        {formatText(t('generations_per_prompt_hint'), { count: Math.max(1, generationsPerPrompt || 1) })}
+                                    </p>
+                                </div>
                             </>
                          )}
 
                          {mode === 'text' && (
                              <div>
-                                <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2 ml-1">Files per Request</label>
+                                <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2 ml-1">{t('files_per_request_label')}</label>
                                 <NumberStepper
                                     value={filesPerRequest}
                                     onChange={setFilesPerRequest}
@@ -465,7 +594,7 @@ const BatchProcessor: React.FC = () => {
                                     decreaseAriaLabel="Decrease files per request"
                                     increaseAriaLabel="Increase files per request"
                                 />
-                                <p className="text-[10px] text-slate-500 mt-1 ml-1">Example: 2 files merged into 1 prompt.</p>
+                                <p className="text-[10px] text-slate-500 mt-1 ml-1">{t('files_per_request_hint')}</p>
                              </div>
                          )}
 
@@ -496,14 +625,30 @@ const BatchProcessor: React.FC = () => {
                             className="flex-1"
                             rows={4}
                         />
-                         <TextArea 
-                            label={t('user_prompt_label')} 
-                            value={config.userPrompt}
-                            onChange={e => setConfig({ ...config, userPrompt: e.target.value })}
-                            className="flex-1"
-                            rows={4}
-                            placeholder={mode === 'text' ? t('analyze_files_placeholder') : t('image_gen_placeholder')}
-                        />
+                        <div>
+                            <TextArea
+                                label={t('user_prompt_label')}
+                                value={config.userPrompt}
+                                onChange={e => setConfig({ ...config, userPrompt: e.target.value })}
+                                className="flex-1"
+                                rows={6}
+                                placeholder={t('batch_prompts_placeholder')}
+                            />
+                            <p className="text-[11px] text-slate-500 mt-2 ml-1">
+                                {config.userPrompt.trim()
+                                    ? (mode === 'image'
+                                        ? formatText(t('local_batch_prompts_hint_image'), {
+                                            prompts: promptsCount,
+                                            generations: Math.max(1, generationsPerPrompt || 1),
+                                            requests: localImageRequestsEstimate,
+                                        })
+                                        : formatText(t('local_batch_prompts_hint_text'), {
+                                            prompts: promptsCount,
+                                            groups: localTextGroupsEstimate,
+                                        }))
+                                    : t('batch_prompts_hint_empty')}
+                            </p>
+                        </div>
                     </div>
                 </div>
                 
@@ -526,9 +671,17 @@ const BatchProcessor: React.FC = () => {
                     <div className="mt-8 border-t border-slate-700/50 pt-8 animate-fade-in">
                          <div className="flex justify-between items-center mb-6">
                             <h3 className="text-sm font-bold text-slate-400 uppercase tracking-wider">Queue ({pendingList.length})</h3>
-                            <Button variant="success" onClick={runBatch} isLoading={isBatchRunning} icon="fa-play" className="px-8 shadow-xl shadow-emerald-900/30">
-                                {t('start_batch')}
-                            </Button>
+                            <div className="flex items-center gap-3">
+                                <button
+                                    onClick={() => setShowErrorsOnly(prev => !prev)}
+                                    className={`text-[11px] px-3 py-2 rounded-lg border transition-colors ${showErrorsOnly ? 'bg-red-500/15 border-red-500/40 text-red-300' : 'bg-slate-800/70 border-slate-700 text-slate-300 hover:text-white'}`}
+                                >
+                                    {t('local_filter_errors')}
+                                </button>
+                                <Button variant="success" onClick={runBatch} isLoading={isBatchRunning} icon="fa-play" className="px-8 shadow-xl shadow-emerald-900/30">
+                                    {t('start_batch')}
+                                </Button>
+                            </div>
                         </div>
                         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 max-h-80 overflow-y-auto custom-scrollbar p-1">
                             {pendingList.map(item => (
@@ -543,6 +696,11 @@ const BatchProcessor: React.FC = () => {
                                                 <span className="text-red-400"><i className="fas fa-exclamation-circle"></i> Failed</span> : 
                                                 <span className="text-slate-500">Pending</span>}
                                         </div>
+                                        {item.batchPrompt && (
+                                            <div className="text-[10px] text-slate-500 mt-1 truncate" title={item.batchPrompt}>
+                                                p{item.promptIndex || 1}, g{item.generationIndex || 1}: {item.batchPrompt}
+                                            </div>
+                                        )}
                                     </div>
                                     <button onClick={() => removeFile(item.id)} className="text-slate-500 hover:text-red-400 p-2 rounded-full hover:bg-slate-700/50 transition-colors">
                                         <i className="fas fa-times"></i>
@@ -563,10 +721,18 @@ const BatchProcessor: React.FC = () => {
                                 </h3>
                                 <span className="text-xs text-slate-500">Will process in chunks of {filesPerRequest}</span>
                             </div>
-                            
-                            <Button variant="success" onClick={runBatch} isLoading={isBatchRunning} disabled={!hasItemsToProcess} icon="fa-play" className="px-8 shadow-xl shadow-emerald-900/30">
-                                {t('start_batch')}
-                            </Button>
+
+                            <div className="flex items-center gap-3">
+                                <button
+                                    onClick={() => setShowErrorsOnly(prev => !prev)}
+                                    className={`text-[11px] px-3 py-2 rounded-lg border transition-colors ${showErrorsOnly ? 'bg-red-500/15 border-red-500/40 text-red-300' : 'bg-slate-800/70 border-slate-700 text-slate-300 hover:text-white'}`}
+                                >
+                                    {t('local_filter_errors')}
+                                </button>
+                                <Button variant="success" onClick={runBatch} isLoading={isBatchRunning} disabled={!hasItemsToProcess} icon="fa-play" className="px-8 shadow-xl shadow-emerald-900/30">
+                                    {t('start_batch')}
+                                </Button>
+                            </div>
                         </div>
 
                         {/* Staging List (Simple) */}
@@ -583,8 +749,8 @@ const BatchProcessor: React.FC = () => {
                         )}
                         
                         {/* Processing Groups */}
-                         <div className="space-y-2 max-h-80 overflow-y-auto custom-scrollbar">
-                            {textGroups.filter(g => g.status !== 'completed').map(group => (
+                                 <div className="space-y-2 max-h-80 overflow-y-auto custom-scrollbar">
+                                     {textGroups.filter(g => g.status !== 'completed' && (!showErrorsOnly || g.status === 'failed')).map(group => (
                                 <div key={group.id} className="bg-slate-800/50 border border-slate-700/50 rounded-xl p-3 flex items-center gap-4">
                                      <div className="w-10 h-10 rounded-lg bg-slate-700 flex items-center justify-center text-slate-400">
                                         <i className="fas fa-file-code"></i>
@@ -593,6 +759,11 @@ const BatchProcessor: React.FC = () => {
                                          <div className="text-sm font-medium text-slate-200 truncate">
                                             Group: {group.files.map(f => f.name).join(', ')}
                                          </div>
+                                                      {group.batchPrompt && (
+                                                          <div className="text-[10px] text-slate-500 mt-1 truncate" title={group.batchPrompt}>
+                                                                p{group.promptIndex || 1}: {group.batchPrompt}
+                                                          </div>
+                                                      )}
                                          <div className="text-xs mt-1">
                                             {group.status === 'processing' ? 
                                                 <span className="text-blue-400 flex items-center gap-1"><i className="fas fa-circle-notch fa-spin"></i> Processing...</span> : 
@@ -644,6 +815,11 @@ const BatchProcessor: React.FC = () => {
                                         <button onClick={() => removeFile(item.id)} className="px-4 py-1.5 bg-red-500/10 text-red-400 border border-red-500/20 rounded-full text-xs hover:bg-red-500 hover:text-white transition-all">Remove</button>
                                     </div>
                                     <div className="absolute top-3 right-3 shadow-lg"><i className="fas fa-check-circle text-emerald-400 bg-white rounded-full text-lg"></i></div>
+                                    {(item.promptIndex || item.generationIndex) && (
+                                        <div className="absolute top-3 left-3 text-[10px] px-2 py-1 rounded-md bg-slate-950/70 text-slate-200 border border-slate-600/60">
+                                            P{item.promptIndex || 1} / G{item.generationIndex || 1}
+                                        </div>
+                                    )}
                                 </div>
                                 <div className="p-4 bg-slate-800/30">
                                     <h3 className="text-xs font-bold text-slate-300 truncate mb-2" title={item.file.name}>{item.file.name}</h3>
@@ -651,7 +827,7 @@ const BatchProcessor: React.FC = () => {
                                         <span>Processed</span>
                                         {item.resultImage && (
                                             <button onClick={() => item.resultImage && downloadBase64Image(item.resultImage, `batch-${item.file.name}`, {
-                                                prompt: config.userPrompt,
+                                                prompt: item.batchPrompt ?? config.userPrompt,
                                                 model: config.model,
                                                 resolution: config.resolution,
                                                 aspectRatio: config.aspectRatio,
@@ -675,7 +851,12 @@ const BatchProcessor: React.FC = () => {
                                             {group.files.length} Files: {group.files[0].name} {group.files.length > 1 ? `+${group.files.length - 1}` : ''}
                                         </span>
                                     </div>
-                                    <button onClick={() => removeTextGroup(group.id)} className="text-slate-500 hover:text-red-400"><i className="fas fa-trash"></i></button>
+                                    <div className="flex items-center gap-2">
+                                        {group.promptIndex && (
+                                            <span className="text-[10px] px-2 py-1 rounded-md bg-slate-900 text-slate-300 border border-slate-600/60">P{group.promptIndex}</span>
+                                        )}
+                                        <button onClick={() => removeTextGroup(group.id)} className="text-slate-500 hover:text-red-400"><i className="fas fa-trash"></i></button>
+                                    </div>
                                 </div>
                                 <div className="p-4 flex-1 max-h-60 overflow-y-auto custom-scrollbar bg-slate-950/30">
                                     <pre className="text-xs text-slate-300 whitespace-pre-wrap font-mono">{group.resultText}</pre>

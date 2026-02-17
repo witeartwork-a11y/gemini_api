@@ -99,7 +99,6 @@ const CloudBatchProcessor: React.FC = () => {
     const [textFiles, setTextFiles] = useState<File[]>([]);
     const [filesPerRequest, setFilesPerRequest] = useState<number>(1);
     const [generationsPerPrompt, setGenerationsPerPrompt] = useState<number>(1);
-    const [batchPromptsRaw, setBatchPromptsRaw] = useState<string>('');
 
     const [customJobName, setCustomJobName] = useState<string>('');
     const [isUploading, setIsUploading] = useState(false);
@@ -447,7 +446,7 @@ const CloudBatchProcessor: React.FC = () => {
         }
     };
 
-    const parseBatchPrompts = (rawPrompts: string, fallbackPrompt: string): string[] => {
+    const parseBatchPrompts = (rawPrompts: string): string[] => {
         const trimmedRaw = rawPrompts.trim();
 
         if (trimmedRaw) {
@@ -474,12 +473,11 @@ const CloudBatchProcessor: React.FC = () => {
             }
         }
 
-        const singlePrompt = fallbackPrompt.trim();
-        return singlePrompt ? [singlePrompt] : [];
+        return [];
     };
 
     const handleCreateBatch = async () => {
-        const parsedPrompts = parseBatchPrompts(batchPromptsRaw, config.userPrompt);
+        const parsedPrompts = parseBatchPrompts(config.userPrompt);
 
         if (mode === 'image' && images.length === 0 && parsedPrompts.length === 0) return;
         if (mode === 'text' && textFiles.length === 0) return;
@@ -939,7 +937,7 @@ const CloudBatchProcessor: React.FC = () => {
     const indexOfFirstItem = indexOfLastItem - ITEMS_PER_PAGE;
     const currentJobs = jobs.slice(indexOfFirstItem, indexOfLastItem);
     const totalPages = Math.ceil(jobs.length / ITEMS_PER_PAGE);
-    const parsedPromptsCount = parseBatchPrompts(batchPromptsRaw, config.userPrompt).length;
+    const parsedPromptsCount = parseBatchPrompts(config.userPrompt).length;
     const hasPromptForImageBatch = parsedPromptsCount > 0;
     const totalImageRequestsEstimate = parsedPromptsCount > 0 ? parsedPromptsCount * Math.max(1, generationsPerPrompt || 1) : Math.max(1, generationsPerPrompt || 1);
     const queuedFilesCount = mode === 'image' ? images.length : textFiles.length;
@@ -1181,11 +1179,10 @@ const CloudBatchProcessor: React.FC = () => {
                             </div>
 
                             <TextArea label={t('system_instr_label')} value={config.systemPrompt} onChange={e => setConfig({ ...config, systemPrompt: e.target.value })} className="flex-1" />
-                            <TextArea label={t('user_prompt_label')} value={config.userPrompt} onChange={e => setConfig({ ...config, userPrompt: e.target.value })} className="flex-1" placeholder={mode === 'text' ? t('analyze_files_placeholder') : t('image_gen_placeholder')} />
                             <TextArea
-                                label={t('batch_prompts_label')}
-                                value={batchPromptsRaw}
-                                onChange={e => setBatchPromptsRaw(e.target.value)}
+                                label={t('user_prompt_label')}
+                                value={config.userPrompt}
+                                onChange={e => setConfig({ ...config, userPrompt: e.target.value })}
                                 className="flex-1"
                                 placeholder={t('batch_prompts_placeholder')}
                             />
