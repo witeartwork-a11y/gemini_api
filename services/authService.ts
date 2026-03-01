@@ -5,6 +5,18 @@ const CURRENT_USER_KEY = 'wite_ai_current_user';
 const SAVED_ACCOUNTS_KEY = 'wite_ai_saved_accounts';
 const RETURN_ACCOUNT_KEY = 'wite_ai_return_account';
 
+const normalizeUsersPayload = (payload: unknown): User[] => {
+    if (Array.isArray(payload)) {
+        return payload;
+    }
+
+    if (payload && typeof payload === 'object') {
+        return [payload as User];
+    }
+
+    return [];
+};
+
 // SHA256 hash helper
 export const sha256 = async (message: string): Promise<string> => {
     const msgBuffer = new TextEncoder().encode(message);
@@ -26,7 +38,7 @@ export const initializeUsers = async () => {
     try {
         const res = await fetch('/api/users');
         if (res.ok) {
-            const users = await res.json();
+            const users = normalizeUsersPayload(await res.json());
             if (users.length === 0) {
                  // Initialize default admin on server if empty
                  const defaultAdmin = getDefaultAdmin();
@@ -44,12 +56,12 @@ export const getUsers = async (): Promise<User[]> => {
     try {
         const res = await fetch('/api/users');
         if (res.ok) {
-            const users = await res.json();
+            const users = normalizeUsersPayload(await res.json());
             localStorage.setItem(USERS_KEY, JSON.stringify(users)); // Sync cache
             return users;
         }
     } catch (e) {}
-    return JSON.parse(localStorage.getItem(USERS_KEY) || '[]');
+    return normalizeUsersPayload(JSON.parse(localStorage.getItem(USERS_KEY) || '[]'));
 };
 
 export const saveUser = async (user: User) => {
@@ -170,7 +182,7 @@ export const switchAccount = async (accountId: string): Promise<boolean> => {
     try {
         const res = await fetch('/api/users');
         if (!res.ok) return false;
-        const users: User[] = await res.json();
+        const users = normalizeUsersPayload(await res.json());
         const targetUser = users.find(u => u.id === accountId);
         if (!targetUser) {
             // User no longer exists, remove from saved

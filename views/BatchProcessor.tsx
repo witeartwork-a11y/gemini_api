@@ -86,7 +86,7 @@ const BatchProcessor: React.FC = () => {
                 setFiles(parsed.map((f: any) => ({
                     ...f,
                     preview: f.resultImage || '', 
-                    file: { name: f.fileName, type: f.fileType, size: 0 } 
+                    file: new File([], f.fileName || 'restored-file', { type: f.fileType || 'application/octet-stream' }) 
                 })));
             } catch (e) {
                 console.error("Failed to load batch state", e);
@@ -103,7 +103,8 @@ const BatchProcessor: React.FC = () => {
             resultText: f.resultText,
             error: f.error,
             fileName: f.file.name,
-            fileType: f.file.type
+            fileType: f.file.type,
+            isPromptOnlyTask: f.isPromptOnlyTask
         }));
         try {
             localStorage.setItem('local_batch_files', JSON.stringify(toStore));
@@ -175,12 +176,12 @@ const BatchProcessor: React.FC = () => {
         const promptsForBatch = parsedPrompts.length > 0 ? parsedPrompts : [''];
         
         if (mode === 'image') {
-            const pendingFiles = files.filter(f => (f.status === 'pending' || f.status === 'failed') && (f.file.size > 0 || f.preview.startsWith('blob:')));
+            const pendingFiles = files.filter(f => (f.status === 'pending' || f.status === 'failed') && (f.isPromptOnlyTask || f.file.size > 0 || f.preview.startsWith('blob:')));
             const copiesPerPrompt = Math.max(1, generationsPerPrompt || 1);
             const shouldExpandVariants = promptsForBatch.length > 1 || copiesPerPrompt > 1;
 
             let queueToProcess = pendingFiles;
-            const expandableSources = pendingFiles.filter(f => !f.isVariantTask);
+            const expandableSources = pendingFiles.filter(f => !f.isVariantTask && !f.isPromptOnlyTask);
 
             if (shouldExpandVariants && expandableSources.length > 0) {
                 const makeVariantName = (name: string, promptIndex: number, generationIndex: number) => {
@@ -223,8 +224,28 @@ const BatchProcessor: React.FC = () => {
                 ]);
             }
 
+            if (queueToProcess.length === 0 && config.userPrompt.trim()) {
+                const promptOnlyPreview = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==';
+                const promptOnlyTasks: BatchFile[] = promptsForBatch.flatMap((prompt, promptIdx) => {
+                    return Array.from({ length: copiesPerPrompt }, (_, generationIdx) => ({
+                        id: Math.random().toString(36).substring(2, 11),
+                        file: new File([], `prompt-only_p${promptIdx + 1}_g${generationIdx + 1}.txt`, { type: 'text/plain' }),
+                        preview: promptOnlyPreview,
+                        status: 'pending',
+                        batchPrompt: prompt,
+                        promptIndex: promptIdx + 1,
+                        generationIndex: generationIdx + 1,
+                        isVariantTask: true,
+                        isPromptOnlyTask: true,
+                    }));
+                });
+
+                queueToProcess = promptOnlyTasks;
+                setFiles(prev => [...prev, ...promptOnlyTasks]);
+            }
+
             for (const batchFile of queueToProcess) {
-                if (batchFile.file.size === 0 && !batchFile.preview.startsWith('blob:')) continue; 
+                if (!batchFile.isPromptOnlyTask && batchFile.file.size === 0 && !batchFile.preview.startsWith('blob:')) continue; 
 
                 setFiles(prev => prev.map(f => f.id === batchFile.id ? { ...f, status: 'processing' } : f));
 
@@ -234,7 +255,7 @@ const BatchProcessor: React.FC = () => {
                         userPrompt: batchFile.batchPrompt ?? config.userPrompt,
                     };
 
-                    const result = await generateContent(taskConfig, batchFile.file ? [batchFile.file] : []);
+                    const result = await generateContent(taskConfig, batchFile.isPromptOnlyTask ? [] : (batchFile.file ? [batchFile.file] : []));
                     
                     if (user && result.image) {
                         let cost = 0;
@@ -260,7 +281,7 @@ const BatchProcessor: React.FC = () => {
                             // @ts-ignore
                             result.usageMetadata,
                             cost,
-                            { count: 1 },
+                            { count: batchFile.isPromptOnlyTask ? 0 : 1 },
                             taskConfig.resolution
                         );
                     }
@@ -502,7 +523,7 @@ const BatchProcessor: React.FC = () => {
         : textGroups.filter(g => g.status === 'completed');
 
     const hasItemsToProcess = mode === 'image' 
-        ? files.some(f => f.status === 'pending' || f.status === 'failed')
+        ? files.some(f => f.status === 'pending' || f.status === 'failed') || !!config.userPrompt.trim()
         : (pendingTextFiles.length > 0 || textGroups.some(g => g.status === 'pending' || g.status === 'failed'));
 
     const localImageRequestsEstimate = files.filter(f => f.status === 'pending' || f.status === 'failed').length * promptsCount * Math.max(1, generationsPerPrompt || 1);

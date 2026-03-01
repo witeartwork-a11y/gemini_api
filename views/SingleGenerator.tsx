@@ -408,7 +408,7 @@ const SingleGenerator: React.FC = () => {
                                 label={t('user_prompt_label')}
                                 value={config.userPrompt}
                                 onChange={e => setConfig({ ...config, userPrompt: e.target.value })}
-                                rows={8}
+                                rows={6}
                                 placeholder={t('prompt_placeholder')}
                             />
 

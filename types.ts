@@ -61,6 +61,7 @@ export interface BatchFile {
     promptIndex?: number;
     generationIndex?: number;
     isVariantTask?: boolean;
+    isPromptOnlyTask?: boolean;
     resultImage?: string; // base64
     resultText?: string;
     error?: string;
