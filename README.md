@@ -2,188 +2,189 @@
 <img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
 </div>
 
-# Gemini AI App - PHP Edition
+# Wite AI — Gemini Image Generator
 
-Полнофункциональное веб-приложение для работы с Gemini API, собранное как статический HTML сайт с PHP бэкендом.
+Полнофункциональное веб-приложение для генерации изображений и текста через Google Gemini API / NeuroAPI.
 
 **Архитектура:**
-- 🎨 Фронтенд: React + TypeScript (собирается в статический HTML)
-- 🔙 Бэкенд: PHP с маршрутизацией через Apache/Nginx
-- 💾 Хранилище: Файловая система (JSON логи + изображения)
-- 🐳 Контейнеризация: Docker для быстрого развертывания
+- 🎨 **Фронтенд:** React + TypeScript + Tailwind CSS (собирается в статический SPA через Vite)
+- 🔙 **Бэкенд:** Node.js + Express 5 (REST API, сессии, шифрование)
+- 💾 **Хранилище:** Файловая система (JSON логи + PNG изображения + миниатюры)
+- 🔐 **Безопасность:** PBKDF2 хэширование паролей, AES-256 шифрование API ключей, rate limiting, CORS
+- 🖼️ **Миниатюры:** Автоматическая генерация через sharp (300px)
 
 ## 🚀 Быстрый старт
 
-### Вариант 1: Docker (Рекомендуется)
-
-```bash
-# Сборка
-npm install
-npm run build
-
-# Запуск в контейнере
-docker-compose up --build
-
-# Доступно на http://localhost
-```
-
-### Вариант 2: Локальная разработка
+### Локальная разработка
 
 ```bash
 # Установка зависимостей
 npm install
 
-# Установите Gemini API ключ
-cp .env.example .env.local
-# Отредактируйте .env.local и добавьте ваш API ключ
-
-# Запуск dev сервера (Vite + локальный PHP)
+# Запуск (Node.js сервер + Vite dev server)
 npm run dev
 
-# В отдельном терминале запустите локальный PHP сервер
-cd dist
-php -S localhost:8080
+# Открыть http://localhost:3000 (фронтенд)
+# API доступен на http://localhost:3001/api/
 ```
 
-### Вариант 3: Продакшен на сервере
+### Продакшен (сервер с Nginx)
 
 ```bash
-# Сборка для продакшена
+# 1. Сборка фронтенда
 npm run build
 
-# Развертывание - смотри DEPLOYMENT.md
+# 2. Создание архива для деплоя
+# PowerShell:
+Compress-Archive -Path dist, server, package.json, package-lock.json -DestinationPath deploy.zip -Force
+# bash:
+zip -r deploy.zip dist/ server/ package.json package-lock.json
+
+# 3. На сервере:
+unzip deploy.zip -d /var/www/site/
+cd /var/www/site
+npm install --production
+pm2 start server/index.js --name gemini-api
 ```
+
+Подробнее: [FAQ/Deploy Archive](FAQ/Deploy%20Archive)
 
 ## 📋 Требования
 
-### Для разработки
-- Node.js 16+
-- npm/yarn
-- PHP 7.4+ (для локального тестирования)
-
-### Для продакшена
-- Apache 2.4+ с mod_rewrite, mod_headers, mod_deflate
-- **или** Nginx + PHP-FPM
-- **или** Docker
+- **Node.js** 18+
+- **npm** 8+
+- **Nginx** (production, проксирует `/api/` в Node.js)
+- **PM2** (production, менеджер процессов)
 
 ## 📁 Структура проекта
 
 ```
 .
-├── src/                    # React компоненты и логика
-├── services/               # API сервисы
-├── api/                    # PHP API
-│   ├── index.php          # Главный роутер
-│   └── README.md          # Документация API
-├── dist/                  # Собранное приложение (после npm run build)
-├── vite.config.ts         # Конфиг Vite
-├── Dockerfile             # Docker образ
-├── docker-compose.yml     # Docker Compose конфиг
-├── nginx.conf             # Конфиг Nginx
-├── .htaccess              # Конфиг Apache
-└── DEPLOYMENT.md          # Подробное руководство развертывания
+├── server/                 # Node.js бэкенд (Express 5)
+│   ├── index.js           # Точка входа, middleware, маршруты
+│   ├── middleware/
+│   │   ├── auth.js        # Сессии, PBKDF2, Bearer-токены
+│   │   └── rateLimit.js   # Rate limiting (200 req/min)
+│   ├── routes/
+│   │   ├── files.js       # Отдача изображений (CORS для внешней галереи)
+│   │   ├── gallery.js     # Внешняя галерея API (/api/external_gallery)
+│   │   ├── history.js     # CRUD истории генераций + thumbnails
+│   │   ├── users.js       # Пользователи, логин, PBKDF2 миграция
+│   │   ├── settings.js    # Системные настройки
+│   │   ├── serverKeys.js  # API ключи провайдеров (AES-256)
+│   │   ├── presets.js     # Пресеты генерации
+│   │   ├── cloudJobs.js   # Cloud Batch задания
+│   │   ├── userPreferences.js
+│   │   └── userSettings.js
+│   └── utils/
+│       ├── encryption.js  # AES-256-CBC шифрование
+│       ├── thumbnail.js   # Генерация миниатюр (sharp)
+│       ├── validation.js  # Валидация входных данных
+│       ├── logger.js      # Структурированное логирование
+│       └── mergeJobs.js   # Слияние batch-заданий
+├── views/                  # React страницы
+│   ├── SingleGenerator.tsx # Генерация одного изображения
+│   ├── BatchProcessor.tsx  # Пакетная генерация
+│   ├── CloudBatchProcessor.tsx
+│   ├── GalleryView.tsx    # Галерея с пагинацией
+│   ├── AdminPanel.tsx     # Панель администратора
+│   └── LoginView.tsx
+├── services/               # Фронтенд-сервисы
+│   ├── geminiService.ts   # Google Gemini API клиент
+│   ├── neuroApiService.ts # NeuroAPI клиент
+│   ├── authService.ts     # Аутентификация (Bearer token)
+│   ├── historyService.ts  # История генераций
+│   └── settingsService.ts # Настройки
+├── components/             # React UI компоненты
+├── contexts/               # React контексты (язык, тема)
+├── hooks/                  # React хуки (пресеты)
+├── dist/                   # Собранный фронтенд (после npm run build)
+├── data/                   # Пользовательские данные (НЕ в git!)
+├── package.json
+├── vite.config.ts
+└── tsconfig.json
 ```
 
-## 🛠️ Доступные команды
+## 🛠️ Команды
 
-```bash
-npm run dev       # Запуск dev сервера
-npm run build     # Сборка для продакшена (React + копирование PHP API)
-npm run preview   # Просмотр собранного приложения
-npm run build.sh  # Вспомогательный скрипт сборки
-```
+| Команда            | Описание                                     |
+|--------------------|----------------------------------------------|
+| `npm run dev`      | Запуск dev-сервера (Node.js + Vite)          |
+| `npm run build`    | Сборка для продакшена                        |
+| `npm run preview`  | Просмотр собранного приложения               |
 
 ## 🌐 API Endpoints
 
-Все эндпойнты доступны под `/api`:
-
+### Публичные
 ```
-POST   /api/save                    # Сохранить результат
-GET    /api/history/:userId         # Получить историю пользователя
-DELETE /api/history/:userId/:id     # Удалить запись
-GET    /api/settings/:userId        # Получить настройки
-POST   /api/settings/:userId        # Сохранить настройки
-GET    /api/files/:userId/*         # Получить файл
+POST   /api/login                    # Аутентификация
+GET    /api/system-settings          # Системные настройки (тема, язык)
+GET    /api/files/:userId/*          # Файлы (изображения, миниатюры)
+GET    /api/external_gallery?key=... # Внешняя галерея (по API ключу)
 ```
 
-Подробнее в [api/README.md](api/README.md)
+### Авторизованные (Bearer token)
+```
+POST   /api/save                     # Сохранить генерацию
+GET    /api/history/:userId          # История пользователя
+DELETE /api/history/:userId/:id      # Удалить запись
 
-## 🐳 Docker развертывание
+GET    /api/settings/:userId         # Настройки пользователя
+POST   /api/settings/:userId         # Сохранить настройки
 
-```bash
-# Сборка образа и запуск
-docker-compose up --build
+GET    /api/user-preferences/:userId # Предпочтения пользователя
+POST   /api/user-preferences/:userId # Сохранить предпочтения
 
-# Остановка
-docker-compose down
+GET    /api/cloud-jobs/:userId       # Cloud Batch задания
+POST   /api/cloud-jobs/:userId       # Сохранить задания
 
-# Логи
-docker-compose logs -f web
+GET    /api/presets                   # Пресеты
+POST   /api/presets                   # Создать пресет
+DELETE /api/presets/:name             # Удалить пресет
 ```
 
-## 🚀 Production Deployment
+### Только для администратора
+```
+GET    /api/users                    # Список пользователей
+POST   /api/users                    # Создать/обновить пользователя
+DELETE /api/users/:userId            # Удалить пользователя
 
-**Для Apache:**
-```bash
-sudo cp -r dist/* /var/www/html/
-sudo chown -R www-data:www-data /var/www/html/
-sudo a2enmod rewrite headers deflate
-sudo systemctl restart apache2
+GET    /api/key                      # API ключ внешней галереи
+POST   /api/system-settings         # Обновить системные настройки
+
+GET    /api/server-keys              # API ключи провайдеров
+POST   /api/server-keys              # Добавить ключ
+DELETE /api/server-keys/:id          # Удалить ключ
+POST   /api/server-keys/:id/toggle   # Включить/выключить ключ
+
+GET    /api/admin/stats              # Статистика использования
 ```
 
-**Для Nginx:**
-```bash
-sudo cp -r dist/* /var/www/html/
-sudo cp nginx.conf /etc/nginx/sites-available/app
-sudo ln -s /etc/nginx/sites-available/app /etc/nginx/sites-enabled/
-sudo systemctl restart nginx
-```
-
-**Для SSL (Let's Encrypt):**
-```bash
-# Apache
-sudo certbot --apache -d yourdomain.com
-
-# Nginx  
-sudo certbot --nginx -d yourdomain.com
-```
-
-## 📚 Документация
-
-- [DEPLOYMENT.md](DEPLOYMENT.md) - Полное руководство развертывания
-- [api/README.md](api/README.md) - Документация API
-- [.env.example](.env.example) - Пример переменных окружения
+Документация внешней галереи: [FAQ/Gallery API](FAQ/Gallery%20API)
 
 ## 🔐 Безопасность
 
-- HTTPS/SSL рекомендуется для продакшена
-- API ключи хранятся в окружении
-- CORS настроен в PHP API
-- Защита от path traversal в файловой системе
+- **Пароли** — PBKDF2 (100K итераций, SHA-256) с автоматической миграцией с SHA-256
+- **API ключи** — AES-256-CBC шифрование, ключ в `data/.encryption_key`
+- **Сессии** — Bearer-токены, 24ч TTL, автоочистка
+- **Rate limiting** — 200 req/min общий, 15 req/15min на логин
+- **CORS** — отключён в production (same-origin), включён для внешней галереи
+- **Валидация** — проверка userId, защита от path traversal
+- **trust proxy** — корректный IP за Nginx
 
-## 📊 Производительность
+## ⚙️ Переменные окружения
 
-- Gzip компрессия включена
-- Кэширование статических файлов
-- Оптимизированная сборка Vite
-- Асинхронная загрузка компонентов
+| Переменная            | По умолчанию              | Описание                    |
+|-----------------------|---------------------------|-----------------------------|
+| `PORT`                | `3001`                    | Порт Node.js сервера        |
+| `DATA_DIR`            | `./data`                  | Директория данных            |
+| `NODE_ENV`            | —                         | `production` для продакшена  |
+| `KEY_ENCRYPTION_SECRET` | авто из файла          | Ключ шифрования API ключей   |
 
-## 🐛 Troubleshooting
+## 📖 Документация
 
-### API возвращает 404
-- Убедитесь, что mod_rewrite включен (Apache)
-- Проверьте файл .htaccess присутствует в dist/
-- Перезагрузите сервер
-
-### Изображения не загружаются
-- Проверьте права доступа на папку data
-- Убедитесь, что PHP может писать в файловую систему
-
-### CORS ошибки
-- CORS включен по умолчанию для всех источников
-- Отредактируйте api/index.php для ограничения источников
-
-Подробнее: [DEPLOYMENT.md](DEPLOYMENT.md#решение-проблем)
+- [FAQ/Gallery API](FAQ/Gallery%20API) — Внешняя галерея: эндпоинты, примеры, troubleshooting
+- [FAQ/Deploy Archive](FAQ/Deploy%20Archive) — Сборка и деплой: чеклист, структура архива, Nginx
 
 ## 📝 Лицензия
 

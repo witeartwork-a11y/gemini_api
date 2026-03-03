@@ -6,6 +6,7 @@ import fs from 'fs-extra';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import crypto from 'crypto';
+import rateLimit from 'express-rate-limit';
 
 // Emulate __dirname for ES Modules
 const __filename = fileURLToPath(import.meta.url);
@@ -15,14 +16,218 @@ const app = express();
 const PORT = 3001;
 const DATA_DIR = path.join(__dirname, 'data');
 
-// Middleware
-app.use(cors());
+// ============= 2.6 CORS RESTRICTION =============
+app.use(cors({
+    origin: process.env.CORS_ORIGIN || 'http://localhost:3000',
+    credentials: true
+}));
 app.use(bodyParser.json({ limit: '50mb' }));
+
+// ============= 2.7 RATE LIMITING =============
+const generalLimiter = rateLimit({
+    windowMs: 60 * 1000,
+    max: 200,
+    message: { error: 'Too many requests, please try again later' },
+    standardHeaders: true,
+    legacyHeaders: false
+});
+const loginLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 15,
+    message: { error: 'Too many login attempts, try again later' },
+    standardHeaders: true,
+    legacyHeaders: false
+});
+const keyRevealLimiter = rateLimit({
+    windowMs: 60 * 1000,
+    max: 10,
+    message: { error: 'Too many key reveal requests' }
+});
+app.use('/api/', generalLimiter);
 
 // Ensure base data directory exists
 fs.ensureDirSync(DATA_DIR);
 
-const getUserDir = (userId) => path.join(DATA_DIR, userId);
+// ============= 2.1 PATH TRAVERSAL PROTECTION =============
+const validateUserId = (userId) => {
+    if (!userId || typeof userId !== 'string') return false;
+    if (userId.length > 50) return false;
+    return /^[a-zA-Z0-9_-]+$/.test(userId);
+};
+
+const resolveSafePath = (basePath, ...segments) => {
+    const fullPath = path.resolve(basePath, ...segments);
+    const expectedBase = path.resolve(basePath);
+    if (!fullPath.startsWith(expectedBase + path.sep) && fullPath !== expectedBase) {
+        return null; // Path traversal detected
+    }
+    return fullPath;
+};
+
+const getUserDir = (userId) => {
+    if (!validateUserId(userId)) return null;
+    return path.join(DATA_DIR, userId);
+};
+
+// ============= 2.2 SESSION MANAGEMENT =============
+const activeSessions = new Map(); // token -> { userId, role, expiresAt }
+const SESSION_TTL = 24 * 60 * 60 * 1000; // 24 hours
+
+const createSession = (userId, role) => {
+    const token = crypto.randomBytes(32).toString('hex');
+    activeSessions.set(token, {
+        userId,
+        role,
+        expiresAt: Date.now() + SESSION_TTL
+    });
+    return token;
+};
+
+// Clean expired sessions periodically
+setInterval(() => {
+    const now = Date.now();
+    for (const [token, session] of activeSessions) {
+        if (session.expiresAt < now) activeSessions.delete(token);
+    }
+}, 60 * 60 * 1000); // every hour
+
+const authMiddleware = (req, res, next) => {
+    const authHeader = req.headers.authorization;
+    const token = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null;
+
+    if (!token) {
+        return res.status(401).json({ error: 'Authentication required' });
+    }
+
+    const session = activeSessions.get(token);
+    if (!session || session.expiresAt < Date.now()) {
+        if (session) activeSessions.delete(token);
+        return res.status(401).json({ error: 'Session expired' });
+    }
+
+    req.sessionUserId = session.userId;
+    req.sessionUserRole = session.role;
+    next();
+};
+
+// Check that authenticated user can access target userId's data
+const userAccessMiddleware = (req, res, next) => {
+    const targetUserId = req.params.userId || req.body?.userId || req.query?.userId;
+    if (!targetUserId) return next(); // No target user - generic route
+    if (req.sessionUserRole === 'admin' || req.sessionUserId === targetUserId) {
+        return next();
+    }
+    return res.status(403).json({ error: 'Access denied' });
+};
+
+const adminOnly = (req, res, next) => {
+    if (req.sessionUserRole !== 'admin') {
+        return res.status(403).json({ error: 'Admin access required' });
+    }
+    next();
+};
+
+// ============= 2.4 PBKDF2 PASSWORD HASHING =============
+const PBKDF2_ITERATIONS = 100000;
+const PBKDF2_KEY_LENGTH = 32;
+const SALT_LENGTH = 16;
+
+const hashPasswordPBKDF2 = async (prehash) => {
+    const salt = crypto.randomBytes(SALT_LENGTH).toString('hex');
+    return new Promise((resolve, reject) => {
+        crypto.pbkdf2(prehash, salt, PBKDF2_ITERATIONS, PBKDF2_KEY_LENGTH, 'sha256', (err, derivedKey) => {
+            if (err) reject(err);
+            else resolve(`pbkdf2:${salt}:${derivedKey.toString('hex')}`);
+        });
+    });
+};
+
+const verifyPasswordPBKDF2 = (prehash, storedHash) => {
+    return new Promise((resolve, reject) => {
+        if (!storedHash.startsWith('pbkdf2:')) {
+            // Legacy SHA256: direct compare, and signal need for migration
+            resolve({ match: prehash === storedHash, needsMigration: true });
+            return;
+        }
+        const parts = storedHash.split(':');
+        const salt = parts[1];
+        const hash = parts[2];
+        crypto.pbkdf2(prehash, salt, PBKDF2_ITERATIONS, PBKDF2_KEY_LENGTH, 'sha256', (err, derivedKey) => {
+            if (err) reject(err);
+            else resolve({ match: derivedKey.toString('hex') === hash, needsMigration: false });
+        });
+    });
+};
+
+// ============= 2.3 API KEY ENCRYPTION =============
+const ENCRYPTION_KEY_FILE = path.join(DATA_DIR, '.encryption_key');
+let ENCRYPTION_KEY;
+
+const getEncryptionKey = () => {
+    if (ENCRYPTION_KEY) return ENCRYPTION_KEY;
+    if (process.env.KEY_ENCRYPTION_SECRET) {
+        ENCRYPTION_KEY = process.env.KEY_ENCRYPTION_SECRET;
+    } else if (fs.pathExistsSync(ENCRYPTION_KEY_FILE)) {
+        ENCRYPTION_KEY = fs.readFileSync(ENCRYPTION_KEY_FILE, 'utf-8').trim();
+    } else {
+        ENCRYPTION_KEY = crypto.randomBytes(32).toString('hex');
+        fs.writeFileSync(ENCRYPTION_KEY_FILE, ENCRYPTION_KEY);
+        console.log('Generated new encryption key, stored in data/.encryption_key');
+    }
+    return ENCRYPTION_KEY;
+};
+
+const encryptApiKey = (plaintext) => {
+    const key = Buffer.from(getEncryptionKey(), 'hex');
+    const iv = crypto.randomBytes(16);
+    const cipher = crypto.createCipheriv('aes-256-cbc', key, iv);
+    let encrypted = cipher.update(plaintext, 'utf-8', 'hex');
+    encrypted += cipher.final('hex');
+    return 'enc:' + iv.toString('hex') + ':' + encrypted;
+};
+
+const decryptApiKey = (ciphertext) => {
+    if (!ciphertext.startsWith('enc:')) return ciphertext; // Not encrypted (legacy)
+    const parts = ciphertext.slice(4).split(':');
+    const iv = Buffer.from(parts[0], 'hex');
+    const encrypted = parts[1];
+    const key = Buffer.from(getEncryptionKey(), 'hex');
+    const decipher = crypto.createDecipheriv('aes-256-cbc', key, iv);
+    let decrypted = decipher.update(encrypted, 'hex', 'utf-8');
+    decrypted += decipher.final('utf-8');
+    return decrypted;
+};
+
+// ============= 2.10 KEY ACCESS LOGGING =============
+const KEY_ACCESS_LOG = path.join(DATA_DIR, 'key_access_log.json');
+
+const logKeyAccess = async (action, keyId, userId) => {
+    try {
+        let logs = [];
+        if (await fs.pathExists(KEY_ACCESS_LOG)) {
+            logs = await fs.readJson(KEY_ACCESS_LOG);
+        }
+        logs.push({
+            action,
+            keyId,
+            userId,
+            timestamp: new Date().toISOString()
+        });
+        if (logs.length > 1000) logs = logs.slice(-1000);
+        await fs.writeJson(KEY_ACCESS_LOG, logs, { spaces: 2 });
+    } catch (e) {
+        console.error('Key access log error:', e);
+    }
+};
+
+// ============= 2.9 INPUT VALIDATION =============
+const validateSaveBody = (body) => {
+    if (!body || typeof body !== 'object') return 'Invalid body';
+    if (!validateUserId(body.userId)) return 'Invalid userId';
+    if (body.prompt && typeof body.prompt === 'string' && body.prompt.length > 200000) return 'Prompt too long';
+    if (body.model && typeof body.model === 'string' && body.model.length > 100) return 'Invalid model';
+    return null;
+};
 
 const getJobVersion = (job) => {
     const raw = job?.updatedAt ?? job?.timestamp ?? 0;
@@ -92,34 +297,42 @@ const mergeCloudJobs = (existingJobs, incomingJobs) => {
     return Array.from(merged.values()).sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
 };
 
-// --- NEW: Serve Static Files (Optimized Image Delivery) ---
-// FIX: Using RegExp for routing to avoid path-to-regexp syntax errors in Express 5
-// Captures /api/files/{userId}/{rest_of_path}
+// --- Serve Static Files (Optimized Image Delivery) ---
+// Public endpoint - no auth required (images are accessed by URL in UI)
 app.get(/^\/api\/files\/([^\/]+)\/(.*)$/, (req, res) => {
     const userId = req.params[0];
     const relativePath = req.params[1];
     
-    // Basic security: prevent traversing up directories
-    const safePath = path.normalize(relativePath).replace(/^(\.\.[\/\\])+/, '');
-    
-    const filePath = path.join(DATA_DIR, userId, safePath);
+    // 2.1: Validate userId
+    if (!validateUserId(userId)) {
+        return res.status(400).send('Invalid user ID');
+    }
 
-    if (fs.existsSync(filePath)) {
-        res.sendFile(filePath);
+    // 2.1: Resolve and validate the full path stays within user directory
+    const fullPath = resolveSafePath(DATA_DIR, userId, relativePath);
+    if (!fullPath) {
+        return res.status(403).send('Access denied');
+    }
+
+    if (fs.existsSync(fullPath)) {
+        res.sendFile(fullPath);
     } else {
         res.status(404).send('Not found');
     }
 });
 
 // 1. Save Generation
-app.post('/api/save', async (req, res) => {
+app.post('/api/save', authMiddleware, userAccessMiddleware, async (req, res) => {
     try {
+        const validationError = validateSaveBody(req.body);
+        if (validationError) return res.status(400).json({ error: validationError });
+
         const { userId, type, model, prompt, image, text, aspectRatio, timestamp, usageMetadata, estimatedCost, inputImageInfo, outputResolution, authorName, workId } = req.body;
         
-        if (!userId) return res.status(400).json({ error: 'User ID required' });
+        const userDir = getUserDir(userId);
+        if (!userDir) return res.status(400).json({ error: 'Invalid user ID' });
 
         const dateStr = new Date().toISOString().split('T')[0];
-        const userDir = getUserDir(userId);
         
         // Define paths
         // Images: data/{userId}/images/{date}/
@@ -205,12 +418,14 @@ app.post('/api/save', async (req, res) => {
 });
 
 // 2. Get History (OPTIMIZED: No fs.readFile for images)
-app.get('/api/history/:userId', async (req, res) => {
+app.get('/api/history/:userId', authMiddleware, userAccessMiddleware, async (req, res) => {
     try {
         const { userId } = req.params;
         const { date } = req.query; // Optional date filter
+        if (!validateUserId(userId)) return res.status(400).json({ error: 'Invalid user ID' });
         
         const userDir = getUserDir(userId);
+        if (!userDir) return res.status(400).json({ error: 'Invalid user ID' });
         const logsDir = path.join(userDir, 'logs');
 
         if (!fs.existsSync(logsDir)) {
@@ -285,10 +500,12 @@ app.get('/api/history/:userId', async (req, res) => {
 });
 
 // 3. Delete History Item
-app.delete('/api/history/:userId/:id', async (req, res) => {
+app.delete('/api/history/:userId/:id', authMiddleware, userAccessMiddleware, async (req, res) => {
     try {
         const { userId, id } = req.params;
+        if (!validateUserId(userId)) return res.status(400).json({ error: 'Invalid user ID' });
         const userDir = getUserDir(userId);
+        if (!userDir) return res.status(400).json({ error: 'Invalid user ID' });
         const logsDir = path.join(userDir, 'logs');
 
         if (!fs.existsSync(logsDir)) {
@@ -357,7 +574,7 @@ app.delete('/api/history/:userId/:id', async (req, res) => {
 });
 
 // 4. Admin Stats
-app.get('/api/admin/stats', async (req, res) => {
+app.get('/api/admin/stats', authMiddleware, adminOnly, async (req, res) => {
     try {
         const entries = await fs.readdir(DATA_DIR, { withFileTypes: true });
         const users = entries.filter(dirent => dirent.isDirectory()).map(dirent => dirent.name);
@@ -479,16 +696,24 @@ const upsertUser = (users, incomingUser) => {
     return updatedUsers;
 };
 
-app.get('/api/users', async (req, res) => {
+// GET /api/users - strip passwords from response; admin-only sees all
+app.get('/api/users', authMiddleware, adminOnly, async (req, res) => {
     try {
         const users = await loadUsers();
-        res.json(users);
+        // Never expose password hashes
+        const safeUsers = users.map(u => ({
+            id: u.id,
+            username: u.username,
+            role: u.role,
+            allowedModels: u.allowedModels
+        }));
+        res.json(safeUsers);
     } catch (e) {
         res.status(500).json({ error: e.message });
     }
 });
 
-app.post('/api/users', async (req, res) => {
+app.post('/api/users', authMiddleware, adminOnly, async (req, res) => {
     try {
         const incoming = req.body;
         let usersToSave = [];
@@ -507,8 +732,8 @@ app.post('/api/users', async (req, res) => {
     }
 });
 
-// Login endpoint
-app.post('/api/login', async (req, res) => {
+// Login endpoint - no auth required, rate-limited
+app.post('/api/login', loginLimiter, async (req, res) => {
     try {
         const { username, password } = req.body;
 
@@ -528,16 +753,32 @@ app.post('/api/login', async (req, res) => {
             return res.status(401).json({ error: 'Invalid credentials' });
         }
 
-        // Compare password hash (client sends SHA256 hash)
-        if (user.password === password) {
-            // Success - return user without password hash
+        // 2.4: PBKDF2 verification with migration
+        const result = await verifyPasswordPBKDF2(password, user.password);
+        if (result.match) {
+            // Migrate legacy SHA256 to PBKDF2 on successful login
+            if (result.needsMigration) {
+                const newHash = await hashPasswordPBKDF2(password);
+                user.password = newHash;
+                const allUsers = await loadUsers();
+                const idx = allUsers.findIndex(u => u.id === user.id);
+                if (idx !== -1) {
+                    allUsers[idx].password = newHash;
+                    await fs.writeJson(USERS_FILE, allUsers, { spaces: 2 });
+                    console.log(`Migrated password for user '${user.username}' to PBKDF2`);
+                }
+            }
+
+            // 2.2: Create session token
+            const token = createSession(user.id, user.role);
+
             const responseUser = {
                 id: user.id,
                 username: user.username,
                 role: user.role,
                 allowedModels: user.allowedModels
             };
-            return res.json({ success: true, user: responseUser });
+            return res.json({ success: true, user: responseUser, token });
         } else {
             return res.status(401).json({ error: 'Invalid credentials' });
         }
@@ -547,9 +788,41 @@ app.post('/api/login', async (req, res) => {
     }
 });
 
+// Logout endpoint
+app.post('/api/logout', authMiddleware, (req, res) => {
+    const token = req.headers.authorization?.slice(7);
+    if (token) activeSessions.delete(token);
+    res.json({ success: true });
+});
+
+// Validate session endpoint
+app.get('/api/session', authMiddleware, (req, res) => {
+    res.json({ 
+        valid: true, 
+        userId: req.sessionUserId, 
+        role: req.sessionUserRole 
+    });
+});
+
+// Delete user - admin only
+app.delete('/api/users/:userId', authMiddleware, adminOnly, async (req, res) => {
+    try {
+        const { userId } = req.params;
+        if (userId === 'admin') return res.status(400).json({ error: 'Cannot delete root admin' });
+        
+        let users = await loadUsers();
+        users = users.filter(u => u.id !== userId);
+        await fs.writeJson(USERS_FILE, users, { spaces: 2 });
+        res.json({ success: true });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
 // 6. System Settings Persistence
 const SETTINGS_FILE = path.join(DATA_DIR, 'system_settings.json');
 
+// GET system settings - public (language/theme needed before login)
 app.get('/api/system-settings', async (req, res) => {
     try {
         if (await fs.pathExists(SETTINGS_FILE)) {
@@ -563,7 +836,7 @@ app.get('/api/system-settings', async (req, res) => {
     }
 });
 
-app.post('/api/system-settings', async (req, res) => {
+app.post('/api/system-settings', authMiddleware, adminOnly, async (req, res) => {
     try {
         const settings = req.body;
         await fs.writeJson(SETTINGS_FILE, settings, { spaces: 2 });
@@ -574,10 +847,12 @@ app.post('/api/system-settings', async (req, res) => {
 });
 
 // 7. Cloud Jobs Persistence
-app.get('/api/cloud-jobs/:userId', async (req, res) => {
+app.get('/api/cloud-jobs/:userId', authMiddleware, userAccessMiddleware, async (req, res) => {
     try {
         const { userId } = req.params;
+        if (!validateUserId(userId)) return res.status(400).json({ error: 'Invalid user ID' });
         const userDir = getUserDir(userId);
+        if (!userDir) return res.status(400).json({ error: 'Invalid user ID' });
         const jobsFile = path.join(userDir, 'cloud_jobs.json');
         
         if (await fs.pathExists(jobsFile)) {
@@ -591,11 +866,13 @@ app.get('/api/cloud-jobs/:userId', async (req, res) => {
     }
 });
 
-app.post('/api/cloud-jobs/:userId', async (req, res) => {
+app.post('/api/cloud-jobs/:userId', authMiddleware, userAccessMiddleware, async (req, res) => {
     try {
         const { userId } = req.params;
+        if (!validateUserId(userId)) return res.status(400).json({ error: 'Invalid user ID' });
         const incomingJobs = Array.isArray(req.body) ? req.body : [];
         const userDir = getUserDir(userId);
+        if (!userDir) return res.status(400).json({ error: 'Invalid user ID' });
         await fs.ensureDir(userDir);
         const jobsFile = path.join(userDir, 'cloud_jobs.json');
 
@@ -613,6 +890,205 @@ app.post('/api/cloud-jobs/:userId', async (req, res) => {
         res.status(500).json({ error: e.message });
     }
 });
+
+// ============= SERVER API KEYS =============
+
+const SERVER_KEYS_FILE = path.join(DATA_DIR, 'server_api_keys.json');
+
+const loadServerKeys = async () => {
+    if (await fs.pathExists(SERVER_KEYS_FILE)) {
+        return await fs.readJson(SERVER_KEYS_FILE);
+    }
+    return [];
+};
+
+const saveServerKeys = async (keys) => {
+    await fs.writeJson(SERVER_KEYS_FILE, keys, { spaces: 2 });
+};
+
+const maskApiKey = (rawKey) => {
+    // Decrypt first if encrypted, then mask
+    const key = rawKey?.startsWith('enc:') ? '(encrypted)' : rawKey;
+    if (!key || key.length <= 8) return '****' + (key ? key.slice(-2) : '');
+    return '****' + key.slice(-4);
+};
+
+// Migrate unencrypted keys to encrypted on load
+const migrateKeysEncryption = async () => {
+    const keys = await loadServerKeys();
+    let changed = false;
+    for (const k of keys) {
+        if (k.key && !k.key.startsWith('enc:')) {
+            k.key = encryptApiKey(k.key);
+            changed = true;
+        }
+    }
+    if (changed) {
+        await saveServerKeys(keys);
+        console.log('Migrated API keys to encrypted storage');
+    }
+};
+
+// GET /api/server-keys - List keys (filtered by user access)
+app.get('/api/server-keys', authMiddleware, async (req, res) => {
+    try {
+        const keys = await loadServerKeys();
+        const isAdmin = req.sessionUserRole === 'admin';
+        const userId = req.sessionUserId;
+
+        const result = keys
+            .filter(k => {
+                if (isAdmin) return true;
+                return k.enabled && (
+                    (k.allowedUsers || []).includes('all') ||
+                    (k.allowedUsers || []).includes(userId)
+                );
+            })
+            .map(k => ({
+                id: k.id,
+                provider: k.provider,
+                label: k.label,
+                maskedKey: maskApiKey(k.key),
+                enabled: k.enabled,
+                allowedUsers: k.allowedUsers || [],
+                createdAt: k.createdAt || '',
+            }));
+
+        res.json(result);
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// POST /api/server-keys - Create or update a key (admin only)
+app.post('/api/server-keys', authMiddleware, adminOnly, async (req, res) => {
+    try {
+        const data = req.body;
+        if (!data.provider || !data.label) {
+            return res.status(400).json({ error: 'Provider and label are required' });
+        }
+
+        const keys = await loadServerKeys();
+
+        if (data.id) {
+            // Update existing
+            const idx = keys.findIndex(k => k.id === data.id);
+            if (idx === -1) return res.status(404).json({ error: 'Key not found' });
+            keys[idx].provider = data.provider;
+            keys[idx].label = data.label;
+            if (data.key) keys[idx].key = encryptApiKey(data.key);
+            if (data.enabled !== undefined) keys[idx].enabled = !!data.enabled;
+            if (data.allowedUsers) keys[idx].allowedUsers = data.allowedUsers;
+            await logKeyAccess('update', data.id, req.sessionUserId);
+        } else {
+            // Create new
+            if (!data.key) return res.status(400).json({ error: 'API key value is required' });
+            const newId = 'skey_' + crypto.randomBytes(8).toString('hex');
+            keys.push({
+                id: newId,
+                provider: data.provider,
+                label: data.label,
+                key: encryptApiKey(data.key),
+                enabled: data.enabled !== undefined ? !!data.enabled : true,
+                allowedUsers: data.allowedUsers || ['all'],
+                createdAt: new Date().toISOString(),
+            });
+            await logKeyAccess('create', newId, req.sessionUserId);
+        }
+
+        await saveServerKeys(keys);
+        res.json({ success: true });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// DELETE /api/server-keys/:id - Delete a key (admin only)
+app.delete('/api/server-keys/:id', authMiddleware, adminOnly, async (req, res) => {
+    try {
+        let keys = await loadServerKeys();
+        const keyId = req.params.id;
+        keys = keys.filter(k => k.id !== keyId);
+        await saveServerKeys(keys);
+        await logKeyAccess('delete', keyId, req.sessionUserId);
+        res.json({ success: true });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// POST /api/server-keys/:id/toggle - Toggle enabled/disabled (admin only)
+app.post('/api/server-keys/:id/toggle', authMiddleware, adminOnly, async (req, res) => {
+    try {
+        const keys = await loadServerKeys();
+        const key = keys.find(k => k.id === req.params.id);
+        if (!key) return res.status(404).json({ error: 'Key not found' });
+        key.enabled = !key.enabled;
+        await saveServerKeys(keys);
+        await logKeyAccess('toggle', req.params.id, req.sessionUserId);
+        res.json({ success: true, enabled: key.enabled });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// GET /api/server-keys/:id/reveal - Get actual key value (authorized users)
+app.get('/api/server-keys/:id/reveal', authMiddleware, keyRevealLimiter, async (req, res) => {
+    try {
+        const keys = await loadServerKeys();
+        const key = keys.find(k => k.id === req.params.id);
+        if (!key) return res.status(404).json({ error: 'Key not found' });
+        if (!key.enabled) return res.status(403).json({ error: 'Key is disabled' });
+
+        const isAdmin = req.sessionUserRole === 'admin';
+        const hasAccess = (key.allowedUsers || []).includes('all') || (key.allowedUsers || []).includes(req.sessionUserId);
+        if (!isAdmin && !hasAccess) return res.status(403).json({ error: 'Access denied' });
+
+        await logKeyAccess('reveal', req.params.id, req.sessionUserId);
+        
+        // Decrypt key before sending
+        const decryptedKey = decryptApiKey(key.key);
+        res.json({ key: decryptedKey, provider: key.provider });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// ============= USER PREFERENCES =============
+app.get('/api/user-preferences/:userId', authMiddleware, userAccessMiddleware, async (req, res) => {
+    try {
+        const { userId } = req.params;
+        if (!validateUserId(userId)) return res.status(400).json({ error: 'Invalid user ID' });
+        const prefsFile = path.join(DATA_DIR, userId, 'preferences.json');
+        if (await fs.pathExists(prefsFile)) {
+            const prefs = await fs.readJson(prefsFile);
+            res.json(prefs);
+        } else {
+            res.json({});
+        }
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.post('/api/user-preferences/:userId', authMiddleware, userAccessMiddleware, async (req, res) => {
+    try {
+        const { userId } = req.params;
+        if (!validateUserId(userId)) return res.status(400).json({ error: 'Invalid user ID' });
+        const userDir = path.join(DATA_DIR, userId);
+        await fs.ensureDir(userDir);
+        const prefsFile = path.join(userDir, 'preferences.json');
+        await fs.writeJson(prefsFile, req.body, { spaces: 2 });
+        res.json({ success: true });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// ============= STARTUP =============
+
+// Migrate existing API keys to encrypted storage
+migrateKeysEncryption().catch(e => console.error('Key migration error:', e));
 
 app.listen(PORT, () => {
     console.log(`Server running on http://localhost:${PORT}`);

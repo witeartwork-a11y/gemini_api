@@ -1,32 +1,39 @@
-FROM php:8.2-apache
+# Stage 1 — Build frontend
+FROM node:20-alpine AS build
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci
+COPY . .
+RUN npm run build
 
-# Enable required Apache modules
-RUN a2enmod rewrite && a2enmod headers && a2enmod deflate
+# Stage 2 — Production
+FROM node:20-alpine AS production
+WORKDIR /app
 
-# Install PHP extensions
-RUN docker-php-ext-install -j$(nproc) \
-    json \
-    mbstring
+# Install only production dependencies
+COPY package*.json ./
+RUN npm ci --omit=dev
 
-# Set working directory
-WORKDIR /var/www/html
+# Copy built frontend and server
+COPY --from=build /app/dist ./dist
+COPY server/ ./server/
 
-# Copy application files
-COPY dist/ /var/www/html/
+# Create data directory
+RUN mkdir -p /app/data
 
-# Create data directory with proper permissions
-RUN mkdir -p /var/www/html/data && chmod 777 /var/www/html/data
+# Non-root user for security
+RUN addgroup -S appgroup && adduser -S appuser -G appgroup
+RUN chown -R appuser:appgroup /app/data
+USER appuser
 
-# Set proper permissions
-RUN chown -R www-data:www-data /var/www/html
+# Environment
+ENV NODE_ENV=production
+ENV PORT=3001
 
-# Configure Apache for the app
-ENV APACHE_DOCUMENT_ROOT=/var/www/html
-RUN sed -ri -e 's!/var/www/html!${APACHE_DOCUMENT_ROOT}!g' /etc/apache2/sites-available/*.conf
-RUN sed -ri -e 's!/var/www/html!${APACHE_DOCUMENT_ROOT}!g' /etc/apache2/apache2.conf /etc/apache2/conf-available/*.conf
+EXPOSE 3001
 
-# Expose port
-EXPOSE 80
+# Health check
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s \
+    CMD wget --no-verbose --tries=1 --spider http://localhost:3001/api/system-settings || exit 1
 
-# Start Apache
-CMD ["apache2-foreground"]
+CMD ["node", "server/index.js"]

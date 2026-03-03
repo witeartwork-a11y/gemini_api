@@ -1,12 +1,13 @@
 
 import React, { useState, useEffect } from 'react';
-import { TabId, HarmCategory, HarmBlockThreshold, MediaResolution } from '../types';
+import { TabId, HarmCategory, HarmBlockThreshold, MediaResolution, ApiProvider, ServerApiKey } from '../types';
 import Button from './ui/Button';
 import { useLanguage } from '../contexts/LanguageContext';
 import { useTheme } from '../contexts/ThemeContext';
 import { logout, logoutForAccountSwitch, getCurrentUser, getSavedAccounts, switchAccount, removeSavedAccount, SavedAccount } from '../services/authService';
 import { getSystemSettings, saveSystemSettings } from '../services/settingsService';
 import { SAFETY_CATEGORIES, SAFETY_THRESHOLDS, MEDIA_RESOLUTIONS_OPTIONS } from '../constants';
+import { getAvailableKeysByProvider, selectServerKey, clearSelectedServerKey, getSelectedServerKeyId } from '../services/apiKeyService';
 
 interface LayoutProps {
     children: React.ReactNode;
@@ -26,7 +27,9 @@ const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange }) => 
     const otherAccounts = savedAccounts.filter(a => a.id !== user?.id);
 
     const handleSwitchAccount = async (account: SavedAccount) => {
-        const success = await switchAccount(account.id);
+        const password = window.prompt(`${t('enter_password_for')} ${account.username}:`);
+        if (!password) return;
+        const success = await switchAccount(account.id, password);
         if (success) {
             window.location.reload();
         } else {
@@ -58,6 +61,12 @@ const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange }) => 
     // Settings State
     const [safetySettings, setSafetySettings] = useState(getSystemSettings().safetySettings);
     const [mediaResolution, setMediaResolution] = useState(getSystemSettings().mediaResolution);
+    
+    // Server API Keys State
+    const [availableServerKeys, setAvailableServerKeys] = useState<ServerApiKey[]>([]);
+    const [selectedKeyId, setSelectedKeyId] = useState<string | null>(null);
+    const [useOwnKey, setUseOwnKey] = useState(false);
+    const [loadingKeys, setLoadingKeys] = useState(false);
 
     const getUserScopedGeminiKeyStorageKey = () => {
         return user?.id ? `gemini_api_key_${user.id}` : 'gemini_api_key';
@@ -70,23 +79,54 @@ const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange }) => 
         if (storedKey) setApiKey(storedKey);
         setSafetySettings(getSystemSettings().safetySettings);
         setMediaResolution(getSystemSettings().mediaResolution);
+
+        if (showSettings) {
+            // Load available server keys when settings modal opens
+            setLoadingKeys(true);
+            getAvailableKeysByProvider(ApiProvider.GOOGLE).then(keys => {
+                setAvailableServerKeys(keys);
+                const currentSelectedId = getSelectedServerKeyId(ApiProvider.GOOGLE);
+                if (currentSelectedId && keys.some(k => k.id === currentSelectedId)) {
+                    setSelectedKeyId(currentSelectedId);
+                    setUseOwnKey(false);
+                } else if (keys.length === 0) {
+                    setUseOwnKey(true);
+                } else {
+                    // If user has a local key set but server keys are available, default to server
+                    const hasLocalKey = !!(scopedKey || legacyKey);
+                    setUseOwnKey(hasLocalKey && !currentSelectedId);
+                }
+                setLoadingKeys(false);
+            });
+        }
     }, [showSettings]);
 
-    const saveSettings = () => {
-        // Save API Key
-        let cleanKey = apiKey;
-        const scopedStorageKey = getUserScopedGeminiKeyStorageKey();
-        if (cleanKey) {
-             cleanKey = cleanKey.replace(/[^\x20-\x7E]/g, '').trim();
-             localStorage.setItem(scopedStorageKey, cleanKey);
-             if (!user?.id) {
-                 localStorage.setItem("gemini_api_key", cleanKey);
-             }
-             setApiKey(cleanKey);
-        } else {
-            localStorage.removeItem(scopedStorageKey);
-            if (!user?.id) {
-                localStorage.removeItem("gemini_api_key");
+    const saveSettings = async () => {
+        // Handle API key source
+        if (useOwnKey || availableServerKeys.length === 0) {
+            // Using own key - clear server selection, save to localStorage
+            clearSelectedServerKey(ApiProvider.GOOGLE);
+            let cleanKey = apiKey;
+            const scopedStorageKey = getUserScopedGeminiKeyStorageKey();
+            if (cleanKey) {
+                cleanKey = cleanKey.replace(/[^\x20-\x7E]/g, '').trim();
+                localStorage.setItem(scopedStorageKey, cleanKey);
+                if (!user?.id) {
+                    localStorage.setItem("gemini_api_key", cleanKey);
+                }
+                setApiKey(cleanKey);
+            } else {
+                localStorage.removeItem(scopedStorageKey);
+                if (!user?.id) {
+                    localStorage.removeItem("gemini_api_key");
+                }
+            }
+        } else if (selectedKeyId) {
+            // Using server key - select it (fetches and caches the actual key)
+            const success = await selectServerKey(selectedKeyId, ApiProvider.GOOGLE);
+            if (!success) {
+                alert(t('sk_select_failed'));
+                return;
             }
         }
 
@@ -342,20 +382,104 @@ const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange }) => 
                         </h2>
                         
                         <div className="space-y-6 mb-8">
-                            {/* API Key */}
+                            {/* API Key Section */}
                             <div>
-                                <label htmlFor="api-key-input" className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2 ml-1">
+                                <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3 ml-1">
                                     {t('api_key_label')}
                                 </label>
-                                <input 
-                                    id="api-key-input"
-                                    name="api-key"
-                                    type="password" 
-                                    className="w-full bg-slate-800/50 border border-slate-700 text-slate-100 rounded-xl px-4 py-3.5 focus:ring-2 focus:ring-theme-primary/50 focus:border-theme-primary outline-none transition-all placeholder-slate-600"
-                                    placeholder="Paste your Gemini API Key here..."
-                                    value={apiKey}
-                                    onChange={(e) => setApiKey(e.target.value)}
-                                />
+                                
+                                {loadingKeys ? (
+                                    <div className="text-center py-4 text-slate-500 text-sm">
+                                        <i className="fas fa-spinner fa-spin mr-2"></i>{t('loading')}...
+                                    </div>
+                                ) : availableServerKeys.length > 0 ? (
+                                    /* Server keys available - show selector */
+                                    <div className="space-y-2">
+                                        {availableServerKeys.map(sk => (
+                                            <label key={sk.id} className={`flex items-center gap-3 p-3 rounded-xl border cursor-pointer transition-all ${
+                                                !useOwnKey && selectedKeyId === sk.id 
+                                                    ? 'bg-theme-primary/10 border-theme-primary/50' 
+                                                    : 'bg-slate-800/50 border-slate-700 hover:border-slate-600'
+                                            }`}>
+                                                <input
+                                                    type="radio"
+                                                    name="api-key-source"
+                                                    checked={!useOwnKey && selectedKeyId === sk.id}
+                                                    onChange={() => { setSelectedKeyId(sk.id); setUseOwnKey(false); }}
+                                                    className="sr-only peer"
+                                                />
+                                                <div className={`w-4 h-4 rounded-full border-2 flex items-center justify-center transition-colors ${
+                                                    !useOwnKey && selectedKeyId === sk.id 
+                                                        ? 'border-theme-primary' 
+                                                        : 'border-slate-500'
+                                                }`}>
+                                                    {!useOwnKey && selectedKeyId === sk.id && (
+                                                        <div className="w-2 h-2 rounded-full bg-theme-primary"></div>
+                                                    )}
+                                                </div>
+                                                <div className="flex-1 min-w-0">
+                                                    <div className="text-sm font-medium text-white flex items-center gap-2">
+                                                        <i className="fas fa-server text-xs text-slate-500"></i>
+                                                        {sk.label}
+                                                    </div>
+                                                    <div className="text-[10px] text-slate-500 font-mono">{sk.maskedKey}</div>
+                                                </div>
+                                                <span className={`text-[10px] px-2 py-0.5 rounded ${sk.provider === 'google' ? 'bg-blue-900/50 text-blue-300' : 'bg-purple-900/50 text-purple-300'}`}>
+                                                    {sk.provider === 'google' ? 'Gemini' : 'NeuroAPI'}
+                                                </span>
+                                            </label>
+                                        ))}
+                                        
+                                        {/* Own key option */}
+                                        <label className={`flex items-center gap-3 p-3 rounded-xl border cursor-pointer transition-all ${
+                                            useOwnKey 
+                                                ? 'bg-theme-primary/10 border-theme-primary/50' 
+                                                : 'bg-slate-800/50 border-slate-700 hover:border-slate-600'
+                                        }`}>
+                                            <input
+                                                type="radio"
+                                                name="api-key-source"
+                                                checked={useOwnKey}
+                                                onChange={() => setUseOwnKey(true)}
+                                                className="sr-only peer"
+                                            />
+                                            <div className={`w-4 h-4 rounded-full border-2 flex items-center justify-center transition-colors ${
+                                                useOwnKey ? 'border-theme-primary' : 'border-slate-500'
+                                            }`}>
+                                                {useOwnKey && <div className="w-2 h-2 rounded-full bg-theme-primary"></div>}
+                                            </div>
+                                            <div className="flex-1">
+                                                <div className="text-sm font-medium text-white flex items-center gap-2">
+                                                    <i className="fas fa-key text-xs text-slate-500"></i>
+                                                    {t('sk_use_own_key')}
+                                                </div>
+                                            </div>
+                                        </label>
+                                        
+                                        {useOwnKey && (
+                                            <input 
+                                                id="api-key-input"
+                                                name="api-key"
+                                                type="password" 
+                                                className="w-full bg-slate-800/50 border border-slate-700 text-slate-100 rounded-xl px-4 py-3.5 focus:ring-2 focus:ring-theme-primary/50 focus:border-theme-primary outline-none transition-all placeholder-slate-600 mt-2"
+                                                placeholder={t('sk_enter_own_key')}
+                                                value={apiKey}
+                                                onChange={(e) => setApiKey(e.target.value)}
+                                            />
+                                        )}
+                                    </div>
+                                ) : (
+                                    /* No server keys - show plain text input */
+                                    <input 
+                                        id="api-key-input"
+                                        name="api-key"
+                                        type="password" 
+                                        className="w-full bg-slate-800/50 border border-slate-700 text-slate-100 rounded-xl px-4 py-3.5 focus:ring-2 focus:ring-theme-primary/50 focus:border-theme-primary outline-none transition-all placeholder-slate-600"
+                                        placeholder="Paste your Gemini API Key here..."
+                                        value={apiKey}
+                                        onChange={(e) => setApiKey(e.target.value)}
+                                    />
+                                )}
                             </div>
 
                             {/* Global Safety Settings */}

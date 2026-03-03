@@ -2,11 +2,13 @@
 import React, { useState, useEffect } from 'react';
 import Button from '../components/ui/Button';
 import { getUsers, saveUser, deleteUser, sha256, getCurrentUser } from '../services/authService';
-import { User, ApiProvider } from '../types';
+import { User, ApiProvider, ServerApiKey } from '../types';
 import { MODELS } from '../constants';
 import { usePresets, Preset } from '../hooks/usePresets';
 import { getSystemSettings, saveSystemSettings, syncSystemSettings, SystemSettings } from '../services/settingsService';
 import { useLanguage } from '../contexts/LanguageContext';
+import { getAvailableServerKeys, saveServerKey, deleteServerKey, toggleServerKey } from '../services/apiKeyService';
+import { apiFetch } from '../services/apiFetch';
 
 const AdminPanel: React.FC = () => {
     const [users, setUsers] = useState<User[]>([]);
@@ -31,28 +33,18 @@ const AdminPanel: React.FC = () => {
     const [stats, setStats] = useState<any>(null);
     const [currentPage, setCurrentPage] = useState(1);
     const itemsPerPage = 7;
-    
-    // API Keys State
-    const [geminiApiKey, setGeminiApiKey] = useState<string>('');
-    const [neuroApiKey, setNeuroApiKey] = useState<string>('');
-    const [showGeminiKey, setShowGeminiKey] = useState<boolean>(false);
-    const [showNeuroKey, setShowNeuroKey] = useState<boolean>(false);
 
-    const getScopedGeminiKeyStorageKey = () => {
-        return currentUser?.id ? `gemini_api_key_${currentUser.id}` : 'gemini_api_key';
-    };
-
-    const getScopedNeuroKeyStorageKey = () => {
-        return currentUser?.id ? `neuroapi_api_key_${currentUser.id}` : 'neuroapi_api_key';
-    };
+    // Server API Keys State
+    const [serverKeys, setServerKeys] = useState<ServerApiKey[]>([]);
+    const [skProvider, setSkProvider] = useState<ApiProvider>(ApiProvider.GOOGLE);
+    const [skLabel, setSkLabel] = useState('');
+    const [skKeyValue, setSkKeyValue] = useState('');
+    const [skAllowedUsers, setSkAllowedUsers] = useState<string[]>(['all']);
+    const [skEditingId, setSkEditingId] = useState<string | null>(null);
+    const [skShowKey, setSkShowKey] = useState(false);
 
     useEffect(() => {
         loadData();
-        // Load API keys from localStorage
-        const geminiKey = localStorage.getItem(getScopedGeminiKeyStorageKey()) || localStorage.getItem('gemini_api_key') || '';
-        const neuroKey = localStorage.getItem(getScopedNeuroKeyStorageKey()) || localStorage.getItem('neuroapi_api_key') || '';
-        setGeminiApiKey(geminiKey);
-        setNeuroApiKey(neuroKey);
     }, []);
 
     const loadData = async () => {
@@ -65,7 +57,7 @@ const AdminPanel: React.FC = () => {
 
     const fetchStats = async () => {
         try {
-            const res = await fetch('/api/admin/stats');
+            const res = await apiFetch('/api/admin/stats');
             if (res.ok) {
                 setStats(await res.json());
             }
@@ -76,7 +68,7 @@ const AdminPanel: React.FC = () => {
 
     const fetchGlobalApiKey = async () => {
         try {
-            const res = await fetch('/api/key');
+            const res = await apiFetch('/api/key');
             const data = await res.json();
             if (data.apiKey) {
                 setGlobalApiKey(data.apiKey);
@@ -213,14 +205,79 @@ const AdminPanel: React.FC = () => {
         saveSystemSettings(newSettings);
     };
 
-    const handleSaveGeminiKey = () => {
-        localStorage.setItem(getScopedGeminiKeyStorageKey(), geminiApiKey);
-        alert('Google Gemini API key saved for current user');
+    // --- Server API Keys Logic ---
+    const loadServerKeys = async () => {
+        const keys = await getAvailableServerKeys();
+        setServerKeys(keys);
     };
 
-    const handleSaveNeuroKey = () => {
-        localStorage.setItem(getScopedNeuroKeyStorageKey(), neuroApiKey);
-        alert('NeuroAPI key saved for current user');
+    useEffect(() => {
+        loadServerKeys();
+    }, []);
+
+    const handleSaveServerKey = async () => {
+        if (!skLabel) return alert(t('sk_label_required'));
+        if (!skEditingId && !skKeyValue) return alert(t('sk_key_required'));
+        
+        const success = await saveServerKey({
+            id: skEditingId || undefined,
+            provider: skProvider,
+            label: skLabel,
+            key: skKeyValue || undefined,
+            enabled: true,
+            allowedUsers: skAllowedUsers,
+        });
+        
+        if (success) {
+            resetServerKeyForm();
+            await loadServerKeys();
+        } else {
+            alert(t('sk_save_failed'));
+        }
+    };
+
+    const handleDeleteServerKey = async (keyId: string) => {
+        if (!confirm(t('sk_delete_confirm'))) return;
+        const success = await deleteServerKey(keyId);
+        if (success) {
+            await loadServerKeys();
+        }
+    };
+
+    const handleToggleServerKey = async (keyId: string) => {
+        await toggleServerKey(keyId);
+        await loadServerKeys();
+    };
+
+    const handleEditServerKey = (key: ServerApiKey) => {
+        setSkEditingId(key.id);
+        setSkProvider(key.provider);
+        setSkLabel(key.label);
+        setSkKeyValue(''); // don't show actual key
+        setSkAllowedUsers(key.allowedUsers);
+    };
+
+    const resetServerKeyForm = () => {
+        setSkEditingId(null);
+        setSkProvider(ApiProvider.GOOGLE);
+        setSkLabel('');
+        setSkKeyValue('');
+        setSkAllowedUsers(['all']);
+        setSkShowKey(false);
+    };
+
+    const toggleSkAllowedUser = (userId: string) => {
+        setSkAllowedUsers(prev => {
+            // If toggling 'all', set to just ['all']
+            if (userId === 'all') return ['all'];
+            // Remove 'all' if it was there when selecting specific users
+            const withoutAll = prev.filter(u => u !== 'all');
+            if (withoutAll.includes(userId)) {
+                const result = withoutAll.filter(u => u !== userId);
+                return result.length === 0 ? ['all'] : result;
+            }
+            return [...withoutAll, userId];
+        });
     };
 
     return (
@@ -547,94 +604,176 @@ const AdminPanel: React.FC = () => {
                 </div>
             </div>
 
-            {/* --- 4. API Keys Management --- */}
+            {/* --- 4. Server API Keys Management --- */}
             <div className="bg-slate-800/50 backdrop-blur-sm p-6 rounded-2xl border border-slate-700">
                 <h2 className="text-xl font-bold text-white mb-6 flex items-center gap-2">
-                    <i className="fas fa-key text-pink-500"></i>
-                    API Keys Management
+                    <i className="fas fa-server text-pink-500"></i>
+                    {t('sk_title')}
                 </h2>
-                
-                <div className="space-y-4">
-                    {/* Google Gemini API Key */}
-                    <div className="bg-slate-900/50 p-4 rounded-xl border border-slate-700">
-                        <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">
-                            🔑 Google Gemini API Key
-                        </label>
-                        <div className="flex items-center gap-2">
-                            <input
-                                type={showGeminiKey ? "text" : "password"}
-                                className="flex-1 bg-slate-950 p-3 rounded-lg text-emerald-400 font-mono text-sm border border-slate-800 outline-none focus:border-purple-500"
-                                value={geminiApiKey}
-                                onChange={(e) => setGeminiApiKey(e.target.value)}
-                                placeholder="Enter your Google Gemini API key..."
-                            />
-                            <button
-                                onClick={() => setShowGeminiKey(!showGeminiKey)}
-                                className="px-3 py-2 bg-slate-800 hover:bg-slate-700 rounded text-slate-300 text-sm"
-                            >
-                                <i className={`fas ${showGeminiKey ? 'fa-eye-slash' : 'fa-eye'}`}></i>
-                            </button>
-                            <Button
-                                onClick={handleSaveGeminiKey}
-                                className="px-4 py-2 text-sm bg-purple-600 hover:bg-purple-500"
-                            >
-                                Save
-                            </Button>
+                <p className="text-xs text-slate-400 mb-6">{t('sk_description')}</p>
+
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                    {/* Server Keys List */}
+                    <div className="space-y-4">
+                        <h3 className="text-lg font-medium text-slate-300">{t('sk_existing_keys')}</h3>
+                        <div className="space-y-2 max-h-[400px] overflow-y-auto custom-scrollbar p-1">
+                            {serverKeys.length === 0 ? (
+                                <div className="text-center py-8 text-slate-500 text-sm">{t('sk_no_keys')}</div>
+                            ) : (
+                                serverKeys.map(sk => (
+                                    <div key={sk.id} className={`bg-slate-800 p-4 rounded-xl border ${sk.enabled ? 'border-slate-700' : 'border-red-900/50 opacity-60'} transition-all`}>
+                                        <div className="flex justify-between items-start gap-3">
+                                            <div className="min-w-0 flex-1">
+                                                <div className="flex items-center gap-2 mb-1">
+                                                    <span className="font-bold text-white text-sm truncate">{sk.label}</span>
+                                                    <span className={`text-[10px] px-2 py-0.5 rounded font-mono ${sk.provider === 'google' ? 'bg-blue-900/50 text-blue-300' : 'bg-purple-900/50 text-purple-300'}`}>
+                                                        {sk.provider === 'google' ? 'Gemini' : 'NeuroAPI'}
+                                                    </span>
+                                                    <span className={`text-[10px] px-2 py-0.5 rounded ${sk.enabled ? 'bg-emerald-900/50 text-emerald-300' : 'bg-red-900/50 text-red-300'}`}>
+                                                        {sk.enabled ? t('sk_enabled') : t('sk_disabled')}
+                                                    </span>
+                                                </div>
+                                                <div className="text-xs text-slate-500 font-mono">{sk.maskedKey}</div>
+                                                <div className="text-[10px] text-slate-500 mt-1">
+                                                    {t('sk_access')}: {sk.allowedUsers.includes('all') ? t('all_users') : sk.allowedUsers.join(', ')}
+                                                </div>
+                                            </div>
+                                            <div className="flex gap-1.5 shrink-0">
+                                                <button
+                                                    onClick={() => handleToggleServerKey(sk.id)}
+                                                    className={`p-2 rounded-lg transition-colors ${sk.enabled ? 'text-amber-400 hover:bg-amber-500/10' : 'text-emerald-400 hover:bg-emerald-500/10'}`}
+                                                    title={sk.enabled ? t('sk_disable') : t('sk_enable')}
+                                                >
+                                                    <i className={`fas ${sk.enabled ? 'fa-pause' : 'fa-play'}`}></i>
+                                                </button>
+                                                <button
+                                                    onClick={() => handleEditServerKey(sk)}
+                                                    className="text-blue-400 hover:text-blue-300 p-2 bg-slate-700/50 rounded-lg transition-colors"
+                                                >
+                                                    <i className="fas fa-edit"></i>
+                                                </button>
+                                                <button
+                                                    onClick={() => handleDeleteServerKey(sk.id)}
+                                                    className="text-red-400 hover:text-red-300 p-2 bg-slate-700/50 rounded-lg transition-colors"
+                                                >
+                                                    <i className="fas fa-trash"></i>
+                                                </button>
+                                            </div>
+                                        </div>
+                                    </div>
+                                ))
+                            )}
                         </div>
-                        <p className="text-xs text-slate-500 mt-2 leading-relaxed">
-                            Used when API Provider is set to <strong className="text-slate-400">Google Gemini</strong>. 
-                            Stored in browser's localStorage: <code className="text-emerald-400">gemini_api_key</code>
-                        </p>
                     </div>
 
-                    {/* NeuroAPI Key */}
-                    <div className="bg-slate-900/50 p-4 rounded-xl border border-slate-700">
-                        <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">
-                            🧠 NeuroAPI Key
-                        </label>
-                        <div className="flex items-center gap-2">
-                            <input
-                                type={showNeuroKey ? "text" : "password"}
-                                className="flex-1 bg-slate-950 p-3 rounded-lg text-emerald-400 font-mono text-sm border border-slate-800 outline-none focus:border-purple-500"
-                                value={neuroApiKey}
-                                onChange={(e) => setNeuroApiKey(e.target.value)}
-                                placeholder="Enter your NeuroAPI key..."
-                            />
-                            <button
-                                onClick={() => setShowNeuroKey(!showNeuroKey)}
-                                className="px-3 py-2 bg-slate-800 hover:bg-slate-700 rounded text-slate-300 text-sm"
-                            >
-                                <i className={`fas ${showNeuroKey ? 'fa-eye-slash' : 'fa-eye'}`}></i>
-                            </button>
-                            <Button
-                                onClick={handleSaveNeuroKey}
-                                className="px-4 py-2 text-sm bg-purple-600 hover:bg-purple-500"
-                            >
-                                Save
-                            </Button>
+                    {/* Add/Edit Server Key Form */}
+                    <div className="bg-slate-900/50 p-6 rounded-xl border border-slate-700">
+                        <h3 className="text-lg font-medium text-slate-300 mb-4">
+                            {skEditingId ? t('sk_edit_key') : t('sk_add_key')}
+                        </h3>
+                        <div className="space-y-4">
+                            <div>
+                                <label className="block text-sm text-slate-400 mb-1">{t('sk_provider')}</label>
+                                <select
+                                    className="w-full bg-slate-800 border border-slate-600 rounded px-3 py-2 text-white outline-none focus:border-pink-500"
+                                    value={skProvider}
+                                    onChange={e => setSkProvider(e.target.value as ApiProvider)}
+                                >
+                                    <option value={ApiProvider.GOOGLE}>Google Gemini</option>
+                                    <option value={ApiProvider.NEUROAPI}>NeuroAPI</option>
+                                </select>
+                            </div>
+                            <div>
+                                <label className="block text-sm text-slate-400 mb-1">{t('sk_label')}</label>
+                                <input
+                                    className="w-full bg-slate-800 border border-slate-600 rounded px-3 py-2 text-white outline-none focus:border-pink-500"
+                                    value={skLabel}
+                                    onChange={e => setSkLabel(e.target.value)}
+                                    placeholder={t('sk_label_placeholder')}
+                                />
+                            </div>
+                            <div>
+                                <label className="block text-sm text-slate-400 mb-1">
+                                    {t('sk_key_value')} {skEditingId && <span className="text-slate-600">({t('sk_leave_empty')})</span>}
+                                </label>
+                                <div className="flex items-center gap-2">
+                                    <input
+                                        type={skShowKey ? 'text' : 'password'}
+                                        className="flex-1 bg-slate-800 border border-slate-600 rounded px-3 py-2 text-emerald-400 font-mono text-sm outline-none focus:border-pink-500"
+                                        value={skKeyValue}
+                                        onChange={e => setSkKeyValue(e.target.value)}
+                                        placeholder="AIza... or sk-..."
+                                    />
+                                    <button
+                                        onClick={() => setSkShowKey(!skShowKey)}
+                                        className="px-3 py-2 bg-slate-800 hover:bg-slate-700 rounded text-slate-300 text-sm border border-slate-600"
+                                    >
+                                        <i className={`fas ${skShowKey ? 'fa-eye-slash' : 'fa-eye'}`}></i>
+                                    </button>
+                                </div>
+                            </div>
+                            <div>
+                                <label className="block text-sm text-slate-400 mb-2">{t('sk_allowed_users')}</label>
+                                <div className="space-y-2 max-h-32 overflow-y-auto p-2 border border-slate-700 rounded custom-scrollbar">
+                                    <label className="flex items-center gap-2 cursor-pointer">
+                                        <span className="relative inline-flex items-center">
+                                            <input
+                                                type="checkbox"
+                                                checked={skAllowedUsers.includes('all')}
+                                                onChange={() => toggleSkAllowedUser('all')}
+                                                className="sr-only peer"
+                                            />
+                                            <span className="h-4 w-4 rounded border border-slate-500 bg-slate-800/90 peer-checked:bg-emerald-500/30 peer-checked:border-emerald-400 transition-colors"></span>
+                                            <i className="fas fa-check absolute left-[2px] top-[2px] text-[10px] text-emerald-300 opacity-0 peer-checked:opacity-100 transition-opacity"></i>
+                                        </span>
+                                        <span className="text-sm text-slate-300">{t('all_users')}</span>
+                                    </label>
+                                    {users.map(u => (
+                                        <label key={u.id} className="flex items-center gap-2 cursor-pointer">
+                                            <span className={`relative inline-flex items-center ${skAllowedUsers.includes('all') ? 'opacity-50' : ''}`}>
+                                                <input
+                                                    type="checkbox"
+                                                    checked={skAllowedUsers.includes(u.id)}
+                                                    onChange={() => toggleSkAllowedUser(u.id)}
+                                                    disabled={skAllowedUsers.includes('all')}
+                                                    className="sr-only peer"
+                                                />
+                                                <span className="h-4 w-4 rounded border border-slate-500 bg-slate-800/90 peer-checked:bg-emerald-500/30 peer-checked:border-emerald-400 transition-colors"></span>
+                                                <i className="fas fa-check absolute left-[2px] top-[2px] text-[10px] text-emerald-300 opacity-0 peer-checked:opacity-100 transition-opacity"></i>
+                                            </span>
+                                            <span className="text-sm text-slate-300">{u.username} <span className="text-slate-600 text-xs">({u.role})</span></span>
+                                        </label>
+                                    ))}
+                                </div>
+                            </div>
+                            <div className="flex justify-end gap-2 pt-2">
+                                {skEditingId && (
+                                    <Button variant="secondary" onClick={resetServerKeyForm} className="py-2 text-sm">{t('cancel')}</Button>
+                                )}
+                                <Button onClick={handleSaveServerKey} className="py-2 text-sm bg-pink-600 hover:bg-pink-500">
+                                    {skEditingId ? t('update') : t('sk_add_btn')}
+                                </Button>
+                            </div>
                         </div>
-                        <p className="text-xs text-slate-500 mt-2 leading-relaxed">
-                            Used when API Provider is set to <strong className="text-slate-400">NeuroAPI</strong>. 
-                            Stored in browser's localStorage: <code className="text-emerald-400">neuroapi_api_key</code>
-                        </p>
-                    </div>
-
-                    {/* Global Gallery Access Key (unchanged) */}
-                    <div className="bg-slate-900/50 p-4 rounded-xl border border-slate-700">
-                        <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">
-                            🌐 {t('global_gallery_access')}
-                        </label>
-                        <div className="flex items-center gap-2">
-                            <code className="flex-1 bg-slate-950 p-3 rounded-lg text-emerald-400 font-mono text-sm break-all select-all border border-slate-800">
-                                {globalApiKey || "Loading..."}
-                            </code>
-                        </div>
-                        <p className="text-xs text-slate-500 mt-3 leading-relaxed">
-                            {t('api_key_desc')}<br/>
-                            <span className="text-slate-400 font-mono">GET /api/external_gallery?key=YOUR_KEY</span>
-                        </p>
                     </div>
                 </div>
+            </div>
+
+            {/* --- 5. Gallery Access Key --- */}
+            <div className="bg-slate-800/50 backdrop-blur-sm p-6 rounded-2xl border border-slate-700">
+                <h2 className="text-xl font-bold text-white mb-4 flex items-center gap-2">
+                    <i className="fas fa-globe text-emerald-500"></i>
+                    🌐 {t('global_gallery_access')}
+                </h2>
+                <div className="flex items-center gap-2">
+                    <code className="flex-1 bg-slate-950 p-3 rounded-lg text-emerald-400 font-mono text-sm break-all select-all border border-slate-800">
+                        {globalApiKey || "Loading..."}
+                    </code>
+                </div>
+                <p className="text-xs text-slate-500 mt-3 leading-relaxed">
+                    {t('api_key_desc')}<br/>
+                    <span className="text-slate-400 font-mono">GET /api/external_gallery?key=YOUR_KEY</span>
+                </p>
             </div>
 
              {/* Usage Statistics Classification */}

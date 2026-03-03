@@ -1,15 +1,17 @@
 version: '3.8'
 
 services:
-  web:
+  app:
     build: .
     ports:
-      - "80:80"
+      - "3001:3001"
     volumes:
-      - ./dist:/var/www/html
+      - ./data:/app/data
     environment:
-      - APACHE_DOCUMENT_ROOT=/var/www/html
-    restart: always
+      - NODE_ENV=production
+      - CORS_ORIGIN=http://localhost:3001
+      - KEY_ENCRYPTION_SECRET=${KEY_ENCRYPTION_SECRET}
+    restart: unless-stopped
 
 networks:
   default:

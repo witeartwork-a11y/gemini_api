@@ -1,11 +1,43 @@
 
 import { GoogleGenAI } from "@google/genai";
 import { ProcessingConfig, ModelType, ChatMessage, ApiProvider } from "../types";
+import { MODEL_PRICING } from "../constants";
 import * as neuroApiService from "./neuroApiService";
 import { getApiProvider } from "./settingsService";
 import { downloadBase64ImageWithProof, type ImageProofMetadata } from "./imageProofService";
+import { getResolvedServerKey } from "./apiKeyService";
 
 export type { ImageProofMetadata } from "./imageProofService";
+
+// ========== Retry with exponential backoff ==========
+const RETRYABLE_STATUS_CODES = [429, 500, 503];
+
+const withRetry = async <T>(
+    fn: () => Promise<T>,
+    maxRetries = 3,
+    baseDelay = 1000,
+    signal?: AbortSignal
+): Promise<T> => {
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+        try {
+            if (signal?.aborted) throw new Error("Aborted");
+            return await fn();
+        } catch (error: any) {
+            if (signal?.aborted) throw error;
+
+            const status = error?.status || error?.httpStatusCode || 0;
+            const isRetryable = RETRYABLE_STATUS_CODES.includes(status) ||
+                (error.message && (error.message.includes('429') || error.message.includes('503')));
+
+            if (!isRetryable || attempt === maxRetries) throw error;
+
+            const delay = baseDelay * Math.pow(2, attempt) + Math.random() * 1000;
+            console.warn(`API retry ${attempt + 1}/${maxRetries} after ${Math.round(delay)}ms (status: ${status || 'unknown'})`);
+            await new Promise(r => setTimeout(r, delay));
+        }
+    }
+    throw new Error('Max retries exceeded');
+};
 
 const getCurrentUserId = (): string | null => {
     try {
@@ -19,6 +51,11 @@ const getCurrentUserId = (): string | null => {
 };
 
 const getApiKey = (): string => {
+    // 1. Check for server-managed key (selected by user, cached in sessionStorage)
+    const serverKey = getResolvedServerKey(ApiProvider.GOOGLE);
+    if (serverKey) return serverKey.replace(/[^\x20-\x7E]/g, '').trim();
+
+    // 2. Check user-scoped localStorage key
     const currentUserId = getCurrentUserId();
     let key = currentUserId ? localStorage.getItem(`gemini_api_key_${currentUserId}`) : null;
     if (!key) {
@@ -44,7 +81,7 @@ const getGeminiClient = () => {
 const getModelFlags = (model: string) => {
     return {
         isImageModel: model.includes('image'),
-        isProImageModel: model === ModelType.GEMINI_3_PRO_IMAGE || model === ModelType.GEMINI_3_1_PRO_IMAGE,
+        isProImageModel: model === ModelType.GEMINI_3_PRO_IMAGE || model === ModelType.GEMINI_3_1_FLASH_IMAGE,
     };
 };
 
@@ -102,6 +139,69 @@ export const downloadTextFile = (text: string, filename: string) => {
     link.click();
     document.body.removeChild(link);
     window.URL.revokeObjectURL(url);
+};
+
+/**
+ * CountTokens API — estimate input token count and cost before generating.
+ * Builds the same content parts as generateContent to get accurate counts.
+ */
+export const countTokens = async (
+    config: ProcessingConfig,
+    imageFiles: File[]
+): Promise<{ inputTokens: number; inputCost: number; estimatedImageCost: number; totalEstimatedCost: number }> => {
+    const { ai } = getGeminiClient();
+    const { isImageModel } = getModelFlags(config.model);
+
+    // Build content parts identical to generateContent
+    const parts: any[] = [];
+
+    let finalPrompt = config.userPrompt || '';
+    if (isImageModel) {
+        finalPrompt = combinePrompts(config.systemPrompt, config.userPrompt);
+    }
+
+    if (finalPrompt) {
+        parts.push({ text: finalPrompt });
+    }
+
+    // Include images in token count
+    if (imageFiles && imageFiles.length > 0) {
+        for (const file of imageFiles) {
+            const base64Data = await fileToBase64(file);
+            parts.push({
+                inlineData: {
+                    mimeType: file.type,
+                    data: base64Data
+                }
+            });
+        }
+    }
+
+    const response = await withRetry(() => ai.models.countTokens({
+        model: config.model,
+        contents: [{ parts }]
+    }));
+
+    const totalTokens = (response as any).totalTokens || 0;
+    const pricing = MODEL_PRICING[config.model];
+    const inputCost = totalTokens * (pricing?.input || 0);
+
+    // Estimate output image cost based on resolution
+    let estimatedImageCost = 0;
+    if (isImageModel && pricing) {
+        if (pricing.perImageByResolution && config.resolution) {
+            estimatedImageCost = pricing.perImageByResolution[config.resolution] || pricing.perImage || 0;
+        } else {
+            estimatedImageCost = pricing.perImage || 0;
+        }
+    }
+
+    return {
+        inputTokens: totalTokens,
+        inputCost,
+        estimatedImageCost,
+        totalEstimatedCost: inputCost + estimatedImageCost
+    };
 };
 
 export const generateContent = async (
@@ -199,7 +299,7 @@ const generateContentGoogle = async (
         }
 
         // Grounding with Google Image Search (only for gemini-3.1-flash-image-preview)
-        if (config.useImageSearch && config.model === ModelType.GEMINI_3_1_PRO_IMAGE) {
+        if (config.useImageSearch && config.model === ModelType.GEMINI_3_1_FLASH_IMAGE) {
             generateConfig.tools = [
                 { googleSearch: { searchTypes: { webSearch: {}, imageSearch: {} } } }
             ];
@@ -213,14 +313,14 @@ const generateContentGoogle = async (
 
         if (signal?.aborted) throw new Error("Aborted");
 
-        const response = await ai.models.generateContent({
+        const response = await withRetry(() => ai.models.generateContent({
             model: config.model,
             contents: [{ parts: parts }], 
             config: generateConfig
         }, { 
             // @ts-ignore - SDK might support signal in RequestOptions
             signal 
-        });
+        }), 3, 1000, signal);
 
         const usageMetadata = (response as any).usageMetadata;
 
@@ -290,7 +390,7 @@ const sendChatMessageGoogle = async (
     }
 
     const isImageModel = effectiveModel.includes('image');
-    const isProImageModel = effectiveModel === ModelType.GEMINI_3_PRO_IMAGE || effectiveModel === ModelType.GEMINI_3_1_PRO_IMAGE;
+    const isProImageModel = effectiveModel === ModelType.GEMINI_3_PRO_IMAGE || effectiveModel === ModelType.GEMINI_3_1_FLASH_IMAGE;
 
     // 2. Prepare History for SDK
     const sdkHistory = history.map(msg => {
@@ -343,9 +443,9 @@ const sendChatMessageGoogle = async (
             });
         });
 
-        const response = await chat.sendMessage({
+        const response = await withRetry(() => chat.sendMessage({
             message: messageParts
-        });
+        }));
 
         if (!response.candidates || response.candidates.length === 0) {
             const feedback = (response as any).promptFeedback;
@@ -489,30 +589,35 @@ export const uploadFileToGemini = async (file: File, index: number = 0) => {
 /**
  * Generic Batch Creator that accepts pre-formed requests.
  * Use this for Text batches or complex mixed batches.
+ * Uses Gemini Batch API format: { key: "...", request: {...} }
  */
 export const createBatchJobFromRequests = async (
-    requests: { custom_id: string, request: any }[],
+    requests: { key: string, request: any }[],
     config: { model: string, displayName?: string }
 ) => {
     const { aiAny } = getGeminiClient();
 
     console.log(`[Batch] Creating generic job with ${requests.length} requests`);
 
-    // Create JSONL content
+    // Create JSONL content (Gemini Batch API format with "key" field)
     const jsonlContent = requests.map(r => JSON.stringify(r)).join('\n');
     const manifestName = `manifest_${Date.now()}.jsonl`;
-    const jsonlFile = new File([jsonlContent], manifestName, { type: 'application/jsonl' });
+    const jsonlFile = new File([jsonlContent], manifestName, { type: 'jsonl' });
     
-    const uploadResWrapper = await uploadToGeminiFilesApi(aiAny, jsonlFile, manifestName);
+    // Upload with explicit mimeType: 'jsonl' as per Gemini Batch API spec
+    const uploadResWrapper = await withRetry(() => aiAny.files.upload({
+        file: jsonlFile,
+        config: { displayName: manifestName, mimeType: 'jsonl' }
+    }));
     const uploadRes = normalizeFileResponse(uploadResWrapper);
     
     console.log(`[Batch] Manifest uploaded: ${uploadRes.name}`);
 
-    return await aiAny.batches.create({ 
+    return await withRetry(() => aiAny.batches.create({ 
         model: config.model, 
         src: uploadRes.name, 
         config: { displayName: config.displayName || `Batch_${Date.now()}` } 
-    });
+    }));
 };
 
 /**
@@ -542,9 +647,8 @@ export const createCloudBatchJob = async (fileResources: { uri: string, mimeType
 
          if (isImageModel) {
               applyImageConfig(generationConfig, config, isProImageModel);
-            if (!isProImageModel) {
-                 generationConfig.responseModalities = ['TEXT', 'IMAGE'];
-            }
+              // All image models need responseModalities to return images in batch
+              generationConfig.responseModalities = ['TEXT', 'IMAGE'];
          }
 
          const requestBody: any = { 
@@ -552,14 +656,13 @@ export const createCloudBatchJob = async (fileResources: { uri: string, mimeType
              generationConfig: generationConfig
          };
 
-         if (isProImageModel) {
-            requestBody.tools = [{ googleSearch: {} }];
-         }
+         // NOTE: Google Search tools are NOT supported in Batch API for image generation
+         // The Batch API processes raw JSONL requests and does not support tools with image gen
 
-         const customId = resource.originalName.replace(/\./g, '_DOT_');
+         const keyId = resource.originalName.replace(/\./g, '_DOT_');
 
          return { 
-             custom_id: customId,
+             key: keyId,
              request: requestBody 
          };
     });
@@ -579,7 +682,40 @@ export const cancelBatchJob = async (jobName: string) => {
     }
     
     console.log(`[Batch] Cancelling job: ${name}`);
-    return await aiAny.batches.cancel({ name: name });
+    return await withRetry(() => aiAny.batches.cancel({ name: name }));
+};
+
+export const deleteBatchJob = async (jobName: string) => {
+    const { aiAny } = getGeminiClient();
+    
+    let name = jobName;
+    if (!name.includes('batches/')) {
+        name = `batches/${name}`;
+    }
+    
+    console.log(`[Batch] Deleting job: ${name}`);
+    return await withRetry(() => aiAny.batches.delete({ name: name }));
+};
+
+export const listBatchJobs = async (pageSize: number = 50) => {
+    const { aiAny } = getGeminiClient();
+    
+    console.log(`[Batch] Listing batch jobs`);
+    const result = await withRetry(() => aiAny.batches.list({ config: { pageSize } }));
+    
+    // Collect all jobs from the async iterator or array
+    const jobs: any[] = [];
+    if (Symbol.asyncIterator in Object(result)) {
+        for await (const job of result) {
+            jobs.push(job);
+        }
+    } else if (Array.isArray(result)) {
+        jobs.push(...result);
+    } else if (result?.batches) {
+        jobs.push(...result.batches);
+    }
+    
+    return jobs;
 };
 
 export const getBatchJobStatus = async (jobName: string) => {
@@ -590,7 +726,7 @@ export const getBatchJobStatus = async (jobName: string) => {
         name = `batches/${name}`;
     }
     
-    return await aiAny.batches.get({ name: name });
+    return await withRetry(() => aiAny.batches.get({ name: name }));
 };
 
 export const fetchBatchResultsResponse = async (jobNameOrFileUri: string): Promise<Response> => {
@@ -600,7 +736,7 @@ export const fetchBatchResultsResponse = async (jobNameOrFileUri: string): Promi
     let preferDownloadSuffix = false;
 
     if (jobNameOrFileUri.includes('batches/')) {
-        const job = await aiAny.batches.get({ name: jobNameOrFileUri });
+        const job = await withRetry(() => aiAny.batches.get({ name: jobNameOrFileUri }));
 
         if (job.state !== 'JOB_STATE_SUCCEEDED') {
             throw new Error(`Job is not ready yet. Current state: ${job.state}`);

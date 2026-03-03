@@ -1,5 +1,6 @@
 
 import { HarmBlockThreshold, HarmCategory, SafetySetting, MediaResolution, ApiProvider } from "../types";
+import { apiFetch } from "./apiFetch";
 
 export type AppTheme = 'default' | 'raspberry' | 'green';
 
@@ -29,7 +30,7 @@ const DEFAULT_SAFETY: SafetySetting[] = [
 
 export const syncSystemSettings = async (): Promise<SystemSettings | null> => {
     try {
-        const res = await fetch('/api/system-settings');
+        const res = await apiFetch('/api/system-settings');
         if (res.ok) {
             const remoteSettings = await res.json();
             if (remoteSettings) {
@@ -118,7 +119,7 @@ export const saveSystemSettings = async (settings: SystemSettings) => {
     window.dispatchEvent(new Event('system-settings-changed'));
     
     try {
-        await fetch('/api/system-settings', {
+        await apiFetch('/api/system-settings', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(settings)

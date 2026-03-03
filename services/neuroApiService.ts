@@ -1,9 +1,15 @@
 import OpenAI from 'openai';
-import { ProcessingConfig, ModelType, ChatMessage } from "../types";
+import { ProcessingConfig, ModelType, ChatMessage, ApiProvider } from "../types";
+import { getResolvedServerKey } from "./apiKeyService";
 
 const NEUROAPI_BASE_URL = 'https://neuroapi.host/v1';
 
 const getApiKey = (): string => {
+    // 1. Check for server-managed key
+    const serverKey = getResolvedServerKey(ApiProvider.NEUROAPI);
+    if (serverKey) return serverKey.replace(/[^\x20-\x7E]/g, '').trim();
+
+    // 2. Fall back to localStorage
     let key = localStorage.getItem("neuroapi_api_key");
     if (!key) {
         throw new Error("NeuroAPI Key is missing. Please set it in Settings.");

@@ -29,17 +29,11 @@ const LoginView: React.FC = () => {
     };
 
     const handleGoBack = async () => {
-        if (!returnAccountId) return;
-        setIsGoingBack(true);
-        const success = await switchAccount(returnAccountId);
-        if (success) {
-            clearReturnAccount();
-            window.location.reload();
-        } else {
-            setError(t('switch_account_failed'));
-            clearReturnAccount();
-            setIsGoingBack(false);
-        }
+        if (!returnAccountId || !returnAccount) return;
+        // User needs to enter password to switch back
+        setUsername(returnAccount.username);
+        clearReturnAccount();
+        // Focus the password field — user types password and submits
     };
 
     return (

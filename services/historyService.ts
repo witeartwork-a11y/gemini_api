@@ -1,5 +1,6 @@
 
 import { HistoryItem } from "../types";
+import { apiFetch } from "./apiFetch";
 
 // Use relative URL for both dev and production
 const API_URL = '/api';
@@ -40,7 +41,7 @@ export const saveGeneration = async (
             outputResolution
         };
 
-        const response = await fetch(`${API_URL}/save`, {
+        const response = await apiFetch(`${API_URL}/save`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
@@ -53,13 +54,12 @@ export const saveGeneration = async (
         }
     } catch (error) {
         console.error("Failed to save generation to server:", error);
-        // Fallback or silent fail - UI should probably notify, but keeping interface clean for now
     }
 };
 
 export const getUserHistory = async (userId: string, dateFilter?: string): Promise<HistoryItem[]> => {
     try {
-        const response = await fetch(`${API_URL}/history/${userId}${dateFilter ? `?date=${dateFilter}` : ''}`);
+        const response = await apiFetch(`${API_URL}/history/${userId}${dateFilter ? `?date=${dateFilter}` : ''}`);
         
         if (!response.ok) {
             console.warn("Server unavailable, returning empty history");
@@ -76,7 +76,7 @@ export const getUserHistory = async (userId: string, dateFilter?: string): Promi
 
 export const deleteGeneration = async (userId: string, itemId: string): Promise<boolean> => {
     try {
-        const response = await fetch(`${API_URL}/history/${userId}/${itemId}`, {
+        const response = await apiFetch(`${API_URL}/history/${userId}/${itemId}`, {
             method: 'DELETE'
         });
         return response.ok;

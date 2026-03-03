@@ -20,7 +20,7 @@ const ChatInterface: React.FC = () => {
 
     const scrollRef = useRef<HTMLDivElement>(null);
     const fileInputRef = useRef<HTMLInputElement>(null);
-    const isProImageSelected = selectedModel === ModelType.GEMINI_3_PRO_IMAGE || selectedModel === ModelType.GEMINI_3_1_PRO_IMAGE;
+    const isProImageSelected = selectedModel === ModelType.GEMINI_3_PRO_IMAGE || selectedModel === ModelType.GEMINI_3_1_FLASH_IMAGE;
 
     // Effect to enforce Image Mode logic for Pro Image 3
     useEffect(() => {

@@ -1,4 +1,5 @@
 import { User, ModelType } from "../types";
+import { apiFetch, setAuthToken, clearAuthToken } from "./apiFetch";
 
 const USERS_KEY = 'wite_ai_users';
 const CURRENT_USER_KEY = 'wite_ai_current_user';
@@ -17,7 +18,7 @@ const normalizeUsersPayload = (payload: unknown): User[] => {
     return [];
 };
 
-// SHA256 hash helper
+// SHA256 hash helper (used as pre-hash before server-side PBKDF2)
 export const sha256 = async (message: string): Promise<string> => {
     const msgBuffer = new TextEncoder().encode(message);
     const hashBuffer = await crypto.subtle.digest('SHA-256', msgBuffer);
@@ -25,39 +26,32 @@ export const sha256 = async (message: string): Promise<string> => {
     return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
 };
 
-// Default Admin from environment or fallback
-const getDefaultAdmin = (): User => ({
-    id: 'admin',
-    username: import.meta.env.VITE_ADMIN_USERNAME || 'admin',
-    password: import.meta.env.VITE_ADMIN_PASSWORD_HASH || '616ea71bb9c038037d25a7740b77bfe9b9f740ebaea4b4f735c70b044ad5942a', // hash of 'naumi'
-    role: 'admin',
-    allowedModels: ['all']
-});
+// 2.5: No hardcoded password — admin must be set via env var or users.json
+const getDefaultAdmin = (): User => {
+    const passwordHash = import.meta.env.VITE_ADMIN_PASSWORD_HASH;
+    if (!passwordHash) {
+        console.warn('VITE_ADMIN_PASSWORD_HASH not set. Default admin will not be created on client side.');
+    }
+    return {
+        id: 'admin',
+        username: import.meta.env.VITE_ADMIN_USERNAME || 'admin',
+        password: passwordHash || '',
+        role: 'admin',
+        allowedModels: ['all']
+    };
+};
 
 export const initializeUsers = async () => {
-    try {
-        const res = await fetch('/api/users');
-        if (res.ok) {
-            const users = normalizeUsersPayload(await res.json());
-            if (users.length === 0) {
-                 // Initialize default admin on server if empty
-                 const defaultAdmin = getDefaultAdmin();
-                 await saveUser(defaultAdmin);
-            } else {
-                 localStorage.setItem(USERS_KEY, JSON.stringify(users));
-            }
-        }
-    } catch (e) {
-        console.error("Failed to init users from server", e);
-    }
+    // With server auth, initialization is handled server-side
+    // This is kept for backward compatibility but doesn't fetch users list anymore
 };
 
 export const getUsers = async (): Promise<User[]> => {
     try {
-        const res = await fetch('/api/users');
+        const res = await apiFetch('/api/users');
         if (res.ok) {
             const users = normalizeUsersPayload(await res.json());
-            localStorage.setItem(USERS_KEY, JSON.stringify(users)); // Sync cache
+            localStorage.setItem(USERS_KEY, JSON.stringify(users));
             return users;
         }
     } catch (e) {}
@@ -65,35 +59,28 @@ export const getUsers = async (): Promise<User[]> => {
 };
 
 export const saveUser = async (user: User) => {
-    // Send to server
-    await fetch('/api/users', {
+    await apiFetch('/api/users', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(user)
     });
-    
-    // Refresh cache
     await getUsers();
 };
 
 export const deleteUser = async (id: string) => {
     if (id === 'admin') throw new Error("Cannot delete root admin");
     
-    await fetch(`/api/users/${id}`, {
+    await apiFetch(`/api/users/${id}`, {
         method: 'DELETE'
     });
-    
-    // Refresh cache
     await getUsers();
 };
 
 export const login = async (username: string, password: string): Promise<User | null> => {
-    // Ensure users are initialized (creates default admin if needed)
-    await initializeUsers();
-    
     const passwordHash = await sha256(password);
     
     try {
+        // Login endpoint doesn't require auth token (public)
         const response = await fetch('/api/login', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -106,6 +93,10 @@ export const login = async (username: string, password: string): Promise<User | 
         if (response.ok) {
             const data = await response.json();
             if (data.success && data.user) {
+                // 2.2: Store session token
+                if (data.token) {
+                    setAuthToken(data.token);
+                }
                 const sessionUser = data.user;
                 localStorage.setItem(CURRENT_USER_KEY, JSON.stringify(sessionUser));
                 addSavedAccount(data.user);
@@ -120,6 +111,9 @@ export const login = async (username: string, password: string): Promise<User | 
 };
 
 export const logout = () => {
+    // Notify server to invalidate session
+    apiFetch('/api/logout', { method: 'POST' }).catch(() => {});
+    clearAuthToken();
     localStorage.removeItem(CURRENT_USER_KEY);
     localStorage.removeItem(RETURN_ACCOUNT_KEY);
     window.location.reload();
@@ -130,6 +124,8 @@ export const logoutForAccountSwitch = () => {
     if (current) {
         localStorage.setItem(RETURN_ACCOUNT_KEY, current.id);
     }
+    // Clear auth but don't invalidate token yet (need it for re-login)
+    clearAuthToken();
     localStorage.removeItem(CURRENT_USER_KEY);
     window.location.reload();
 };
@@ -166,7 +162,6 @@ export const addSavedAccount = (user: User) => {
         accounts.push({ id: user.id, username: user.username, role: user.role });
         localStorage.setItem(SAVED_ACCOUNTS_KEY, JSON.stringify(accounts));
     } else if (exists.username !== user.username || exists.role !== user.role) {
-        // Update if username/role changed
         exists.username = user.username;
         exists.role = user.role;
         localStorage.setItem(SAVED_ACCOUNTS_KEY, JSON.stringify(accounts));
@@ -178,22 +173,41 @@ export const removeSavedAccount = (accountId: string) => {
     localStorage.setItem(SAVED_ACCOUNTS_KEY, JSON.stringify(accounts));
 };
 
-export const switchAccount = async (accountId: string): Promise<boolean> => {
+// 2.8: switchAccount now requires password (re-login through server)
+export const switchAccount = async (accountId: string, password?: string): Promise<boolean> => {
     try {
-        const res = await fetch('/api/users');
-        if (!res.ok) return false;
-        const users = normalizeUsersPayload(await res.json());
-        const targetUser = users.find(u => u.id === accountId);
-        if (!targetUser) {
-            // User no longer exists, remove from saved
+        // Check if this is "return to admin" case
+        const returnId = getReturnAccountId();
+        
+        if (returnId && returnId === accountId && password) {
+            // Re-login as the target user
+            const accounts = getSavedAccounts();
+            const account = accounts.find(a => a.id === accountId);
+            if (!account) {
+                removeSavedAccount(accountId);
+                return false;
+            }
+            
+            const user = await login(account.username, password);
+            if (user) {
+                clearReturnAccount();
+                return true;
+            }
+            return false;
+        }
+        
+        if (!password) return false;
+        
+        // Normal switch: need to login as target user
+        const accounts = getSavedAccounts();
+        const account = accounts.find(a => a.id === accountId);
+        if (!account) {
             removeSavedAccount(accountId);
             return false;
         }
-        // Switch: save as current user (without password in session)
-        const sessionUser = { ...targetUser };
-        delete sessionUser.password;
-        localStorage.setItem(CURRENT_USER_KEY, JSON.stringify(sessionUser));
-        return true;
+        
+        const user = await login(account.username, password);
+        return !!user;
     } catch (e) {
         console.error('Switch account failed', e);
         return false;
@@ -215,7 +229,7 @@ export const isModelAllowed = (user: User, model: string): boolean => {
 
 export const getUserPreferences = async (userId: string) => {
     try {
-        const res = await fetch(`/api/user-preferences/${userId}`);
+        const res = await apiFetch(`/api/user-preferences/${userId}`);
         if (res.ok) {
             return await res.json();
         }
@@ -227,7 +241,7 @@ export const getUserPreferences = async (userId: string) => {
 
 export const saveUserPreferences = async (userId: string, preferences: any) => {
     try {
-        const res = await fetch(`/api/user-preferences/${userId}`, {
+        const res = await apiFetch(`/api/user-preferences/${userId}`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(preferences)

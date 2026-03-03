@@ -1,37 +1,56 @@
-# Logs
-logs
+# ========== Dependencies ==========
+node_modules/
+
+# ========== Build output ==========
+dist/
+dist-ssr/
+
+# ========== Logs ==========
+logs/
 *.log
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
-lerna-debug.log*
 
-node_modules
-dist
-dist-ssr
-*.local
-
-# Environment variables
+# ========== Environment & secrets ==========
 .env
 .env.local
 .env.*.local
+*.local
 
-# Secrets
-data/global_api_key.txt
+# ========== User data (passwords, keys, images, logs) ==========
 data/
+# Contains: users.json (пароли), global_api_key.txt (API ключ галереи),
+# .encryption_key (ключ шифрования), server_api_keys.json (API ключи провайдеров),
+# images/, thumbnails/, logs/ (пользовательский контент)
 
-# Old data files
+# ========== Old/archive data ==========
 old data/
 
-# Local knowledge base
-FAQ/
+# ========== Server config with credentials ==========
+fastpanel settings/
 
-# Editor directories and files
+# ========== Deploy archives ==========
+*.zip
+
+# ========== Documentation (not needed in repo) ==========
+FAQ/
+phases/
+COMPLETE.md
+MIGRATION_COMPLETE.md
+QUICKSTART.md
+API_PROVIDERS.md
+
+# ========== Legacy files ==========
+server.js
+
+# ========== Editor & OS ==========
 .vscode/*
 !.vscode/extensions.json
-.idea
+.idea/
 .DS_Store
+Thumbs.db
 *.suo
 *.ntvs*
 *.njsproj

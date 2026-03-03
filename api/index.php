@@ -144,6 +144,27 @@ elseif ($method === 'POST' && preg_match('#^/api/user-preferences/([^/]+)$#', $p
 elseif ($method === 'POST' && $path === '/api/login') {
     loginUser();
 }
+// ============= SERVER API KEYS ROUTES =============
+// Route: GET /api/server-keys - List server API keys (filtered by user access)
+elseif ($method === 'GET' && $path === '/api/server-keys') {
+    listServerApiKeys();
+}
+// Route: POST /api/server-keys - Create/update a server API key (admin only)
+elseif ($method === 'POST' && $path === '/api/server-keys') {
+    saveServerApiKey();
+}
+// Route: DELETE /api/server-keys/{id} - Delete a server API key (admin only)
+elseif ($method === 'DELETE' && preg_match('#^/api/server-keys/([^/]+)$#', $path, $matches)) {
+    deleteServerApiKey($matches[1]);
+}
+// Route: POST /api/server-keys/{id}/toggle - Enable/disable a key (admin only)
+elseif ($method === 'POST' && preg_match('#^/api/server-keys/([^/]+)/toggle$#', $path, $matches)) {
+    toggleServerApiKey($matches[1]);
+}
+// Route: GET /api/server-keys/{id}/reveal - Get actual key value (authorized users only)
+elseif ($method === 'GET' && preg_match('#^/api/server-keys/([^/]+)/reveal$#', $path, $matches)) {
+    revealServerApiKey($matches[1]);
+}
 else {
     http_response_code(404);
     echo json_encode(['error' => 'Not found']);
@@ -1146,4 +1167,211 @@ function loginUser() {
     // User not found
     http_response_code(401);
     echo json_encode(['error' => 'Invalid credentials']);
+}
+
+// ============= SERVER API KEYS FUNCTIONS =============
+
+define('SERVER_KEYS_FILE', DATA_DIR . '/server_api_keys.json');
+
+function loadServerKeys() {
+    if (file_exists(SERVER_KEYS_FILE)) {
+        return json_decode(file_get_contents(SERVER_KEYS_FILE), true) ?? [];
+    }
+    return [];
+}
+
+function saveServerKeys($keys) {
+    file_put_contents(SERVER_KEYS_FILE, json_encode($keys, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+}
+
+function maskApiKey($key) {
+    if (strlen($key) <= 8) return '****' . substr($key, -2);
+    return '****' . substr($key, -4);
+}
+
+function isUserAdmin($userId) {
+    $usersFile = DATA_DIR . '/users.json';
+    if (!file_exists($usersFile)) return false;
+    $users = json_decode(file_get_contents($usersFile), true) ?? [];
+    foreach ($users as $user) {
+        if ($user['id'] === $userId && ($user['role'] === 'admin' || (!empty($user['isAdmin']) && $user['isAdmin']))) {
+            return true;
+        }
+    }
+    return false;
+}
+
+function listServerApiKeys() {
+    $userId = $_GET['userId'] ?? null;
+    $keys = loadServerKeys();
+    
+    $result = [];
+    foreach ($keys as $key) {
+        $isAdmin = $userId && isUserAdmin($userId);
+        $hasAccess = in_array('all', $key['allowedUsers'] ?? []) || in_array($userId, $key['allowedUsers'] ?? []);
+        
+        // Admin sees all keys; users see only their assigned enabled keys
+        if (!$isAdmin && (!$hasAccess || !$key['enabled'])) continue;
+        
+        $entry = [
+            'id' => $key['id'],
+            'provider' => $key['provider'],
+            'label' => $key['label'],
+            'maskedKey' => maskApiKey($key['key']),
+            'enabled' => $key['enabled'],
+            'allowedUsers' => $key['allowedUsers'] ?? [],
+            'createdAt' => $key['createdAt'] ?? '',
+        ];
+        $result[] = $entry;
+    }
+    
+    echo json_encode($result);
+}
+
+function saveServerApiKey() {
+    $data = getJsonInput();
+    $userId = $data['userId'] ?? null;
+    
+    if (!$userId || !isUserAdmin($userId)) {
+        http_response_code(403);
+        echo json_encode(['error' => 'Admin access required']);
+        return;
+    }
+    
+    if (empty($data['provider']) || empty($data['label'])) {
+        http_response_code(400);
+        echo json_encode(['error' => 'Provider and label are required']);
+        return;
+    }
+    
+    $keys = loadServerKeys();
+    $keyId = $data['id'] ?? null;
+    
+    if ($keyId) {
+        // Update existing key
+        $found = false;
+        foreach ($keys as &$key) {
+            if ($key['id'] === $keyId) {
+                $key['provider'] = $data['provider'];
+                $key['label'] = $data['label'];
+                if (!empty($data['key'])) {
+                    $key['key'] = $data['key']; // Only update key value if provided
+                }
+                if (isset($data['enabled'])) {
+                    $key['enabled'] = (bool)$data['enabled'];
+                }
+                if (isset($data['allowedUsers'])) {
+                    $key['allowedUsers'] = $data['allowedUsers'];
+                }
+                $found = true;
+                break;
+            }
+        }
+        if (!$found) {
+            http_response_code(404);
+            echo json_encode(['error' => 'Key not found']);
+            return;
+        }
+    } else {
+        // Create new key
+        if (empty($data['key'])) {
+            http_response_code(400);
+            echo json_encode(['error' => 'API key value is required for new keys']);
+            return;
+        }
+        $newKey = [
+            'id' => 'skey_' . bin2hex(random_bytes(8)),
+            'provider' => $data['provider'],
+            'label' => $data['label'],
+            'key' => $data['key'],
+            'enabled' => isset($data['enabled']) ? (bool)$data['enabled'] : true,
+            'allowedUsers' => $data['allowedUsers'] ?? ['all'],
+            'createdAt' => date('c'),
+        ];
+        $keys[] = $newKey;
+    }
+    
+    saveServerKeys($keys);
+    echo json_encode(['success' => true]);
+}
+
+function deleteServerApiKey($keyId) {
+    $data = getJsonInput();
+    $userId = $data['userId'] ?? $_GET['userId'] ?? null;
+    
+    if (!$userId || !isUserAdmin($userId)) {
+        http_response_code(403);
+        echo json_encode(['error' => 'Admin access required']);
+        return;
+    }
+    
+    $keys = loadServerKeys();
+    $keys = array_values(array_filter($keys, function($k) use ($keyId) {
+        return $k['id'] !== $keyId;
+    }));
+    
+    saveServerKeys($keys);
+    echo json_encode(['success' => true]);
+}
+
+function toggleServerApiKey($keyId) {
+    $data = getJsonInput();
+    $userId = $data['userId'] ?? null;
+    
+    if (!$userId || !isUserAdmin($userId)) {
+        http_response_code(403);
+        echo json_encode(['error' => 'Admin access required']);
+        return;
+    }
+    
+    $keys = loadServerKeys();
+    foreach ($keys as &$key) {
+        if ($key['id'] === $keyId) {
+            $key['enabled'] = !$key['enabled'];
+            saveServerKeys($keys);
+            echo json_encode(['success' => true, 'enabled' => $key['enabled']]);
+            return;
+        }
+    }
+    
+    http_response_code(404);
+    echo json_encode(['error' => 'Key not found']);
+}
+
+function revealServerApiKey($keyId) {
+    $userId = $_GET['userId'] ?? null;
+    
+    if (!$userId) {
+        http_response_code(401);
+        echo json_encode(['error' => 'Authentication required']);
+        return;
+    }
+    
+    $keys = loadServerKeys();
+    foreach ($keys as $key) {
+        if ($key['id'] === $keyId) {
+            // Check if key is enabled
+            if (!$key['enabled']) {
+                http_response_code(403);
+                echo json_encode(['error' => 'This key is disabled']);
+                return;
+            }
+            
+            // Check user access
+            $isAdmin = isUserAdmin($userId);
+            $hasAccess = in_array('all', $key['allowedUsers'] ?? []) || in_array($userId, $key['allowedUsers'] ?? []);
+            
+            if (!$isAdmin && !$hasAccess) {
+                http_response_code(403);
+                echo json_encode(['error' => 'Access denied']);
+                return;
+            }
+            
+            echo json_encode(['key' => $key['key'], 'provider' => $key['provider']]);
+            return;
+        }
+    }
+    
+    http_response_code(404);
+    echo json_encode(['error' => 'Key not found']);
 }

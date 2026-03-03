@@ -1,16 +1,16 @@
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { Select, TextArea, RangeInput } from '../components/ui/InputComponents';
 import Button from '../components/ui/Button';
 import FileUploader from '../components/ui/FileUploader';
 import ImageViewer from '../components/ui/ImageViewer';
 import TextViewer from '../components/ui/TextViewer';
 import NumberStepper from '../components/ui/NumberStepper';
-import { generateContent, downloadBase64Image, downloadTextFile, fileToBase64 } from '../services/geminiService';
+import { generateContent, downloadBase64Image, downloadTextFile, fileToBase64, countTokens } from '../services/geminiService';
 import { saveGeneration, getUserHistory, deleteGeneration } from '../services/historyService';
 import { getCurrentUser } from '../services/authService';
 import { ProcessingConfig, ModelType, HistoryItem } from '../types';
-import { MODELS, ASPECT_RATIOS, RESOLUTIONS, MODEL_PRICING } from '../constants';
+import { MODELS, ASPECT_RATIOS, RESOLUTIONS, MODEL_PRICING, getAvailableResolutions } from '../constants';
 import { useLanguage } from '../contexts/LanguageContext';
 import { usePresets } from '../hooks/usePresets';
 import { getSystemSettings, SystemSettings } from '../services/settingsService';
@@ -24,20 +24,6 @@ interface ImageAsset {
 const SingleGenerator: React.FC = () => {
     const { t } = useLanguage();
 
-    const translatedAspectRatios = [
-        { value: 'Auto', label: t('ar_auto') },
-        { value: '1:1', label: t('ar_square') },
-        { value: '9:16', label: t('ar_portrait_mobile') },
-        { value: '16:9', label: t('ar_landscape') },
-        { value: '3:4', label: t('ar_portrait_standard') },
-        { value: '4:3', label: t('ar_landscape_standard') },
-        { value: '3:2', label: t('ar_classic_photo') },
-        { value: '2:3', label: t('ar_portrait_photo') },
-        { value: '5:4', label: t('ar_print') },
-        { value: '4:5', label: t('ar_instagram') },
-        { value: '21:9', label: t('ar_cinematic') },
-    ];
-
     const { presets } = usePresets();
     const user = getCurrentUser();
     
@@ -50,6 +36,29 @@ const SingleGenerator: React.FC = () => {
         aspectRatio: 'Auto',
         resolution: '1K' 
     });
+
+    const translatedAspectRatios = useMemo(() => [
+        { value: 'Auto', label: t('ar_auto') },
+        { value: '1:1', label: t('ar_square') },
+        { value: '9:16', label: t('ar_portrait_mobile') },
+        { value: '16:9', label: t('ar_landscape') },
+        { value: '3:4', label: t('ar_portrait_standard') },
+        { value: '4:3', label: t('ar_landscape_standard') },
+        { value: '3:2', label: t('ar_classic_photo') },
+        { value: '2:3', label: t('ar_portrait_photo') },
+        { value: '5:4', label: t('ar_print') },
+        { value: '4:5', label: t('ar_instagram') },
+        { value: '21:9', label: t('ar_cinematic') },
+        { value: '1:4', label: t('ar_tall_vertical') },
+        { value: '4:1', label: t('ar_wide_horizontal') },
+        { value: '1:8', label: t('ar_ultra_tall') },
+        { value: '8:1', label: t('ar_ultra_wide') },
+    ].filter(ar => {
+        // 1:4, 4:1, 1:8, 8:1 only for 3.1 Flash Image
+        const flashOnly = ['1:4', '4:1', '1:8', '8:1'];
+        if (flashOnly.includes(ar.value)) return config.model === ModelType.GEMINI_3_1_FLASH_IMAGE;
+        return true;
+    }), [config.model, t]);
     const [repeatCount, setRepeatCount] = useState<number>(1);
     const [uiSettings, setUiSettings] = useState<SystemSettings>(getSystemSettings());
     
@@ -71,6 +80,10 @@ const SingleGenerator: React.FC = () => {
     const [elapsedTime, setElapsedTime] = useState<number>(0);
     const [lastGenerationTime, setLastGenerationTime] = useState<number | null>(null);
     
+    // Token Estimate State
+    const [isEstimating, setIsEstimating] = useState(false);
+    const [tokenEstimate, setTokenEstimate] = useState<{ inputTokens: number; inputCost: number; estimatedImageCost: number; totalEstimatedCost: number } | null>(null);
+
     // Recent History State
     const [recentHistory, setRecentHistory] = useState<HistoryItem[]>([]);
 
@@ -88,6 +101,11 @@ const SingleGenerator: React.FC = () => {
         }
         return () => clearInterval(interval);
     }, [isProcessing]);
+
+    // Clear token estimate when config or images change
+    useEffect(() => {
+        setTokenEstimate(null);
+    }, [config, images]);
 
     // Load recent history and settings
     useEffect(() => {
@@ -182,6 +200,21 @@ const SingleGenerator: React.FC = () => {
 
     const removeImage = (id: string) => {
         setImages(prev => prev.filter(img => img.id !== id));
+    };
+
+    const handleEstimateCost = async () => {
+        setIsEstimating(true);
+        setTokenEstimate(null);
+        setError(null);
+        try {
+            const imageFiles = images.map(img => img.file);
+            const estimate = await countTokens(config, imageFiles);
+            setTokenEstimate(estimate);
+        } catch (e: any) {
+            setError(t('estimate_error') + ': ' + (e?.message || String(e)));
+        } finally {
+            setIsEstimating(false);
+        }
     };
 
     const handleGenerate = async () => {
@@ -359,6 +392,40 @@ const SingleGenerator: React.FC = () => {
                                     {t('stop_btn')}
                                 </button>
                             )}
+                            {/* Estimate cost button */}
+                            {!isProcessing && (
+                                <button
+                                    onClick={handleEstimateCost}
+                                    disabled={isEstimating}
+                                    className="w-full mt-2 bg-slate-800/60 hover:bg-slate-700/60 text-slate-300 hover:text-white border border-slate-600/40 font-medium text-sm py-2.5 rounded-xl transition-all flex items-center justify-center gap-2 disabled:opacity-50"
+                                >
+                                    <i className={`fas ${isEstimating ? 'fa-spinner fa-spin' : 'fa-calculator'}`}></i>
+                                    {isEstimating ? t('estimating') : t('estimate_cost_btn')}
+                                </button>
+                            )}
+                            {/* Token estimate result */}
+                            {tokenEstimate && !isProcessing && (
+                                <div className="mt-2 bg-slate-800/40 border border-slate-700/40 rounded-xl px-4 py-3 text-xs space-y-1">
+                                    <div className="flex justify-between text-slate-400">
+                                        <span>{t('input_tokens')}</span>
+                                        <span className="text-slate-200 font-mono">{tokenEstimate.inputTokens.toLocaleString()}</span>
+                                    </div>
+                                    <div className="flex justify-between text-slate-400">
+                                        <span>{t('input_cost_label')}</span>
+                                        <span className="text-slate-200 font-mono">${tokenEstimate.inputCost.toFixed(6)}</span>
+                                    </div>
+                                    {tokenEstimate.estimatedImageCost > 0 && (
+                                        <div className="flex justify-between text-slate-400">
+                                            <span>{t('image_cost_label')}</span>
+                                            <span className="text-slate-200 font-mono">${tokenEstimate.estimatedImageCost.toFixed(4)}</span>
+                                        </div>
+                                    )}
+                                    <div className="flex justify-between text-emerald-400 font-semibold border-t border-slate-700/40 pt-1 mt-1">
+                                        <span>{t('total_estimated_cost')}</span>
+                                        <span className="font-mono">${tokenEstimate.totalEstimatedCost.toFixed(6)}</span>
+                                    </div>
+                                </div>
+                            )}
                         </div>
 
                         <div className="space-y-5 flex-1 overflow-y-auto custom-scrollbar pr-1">
@@ -415,7 +482,7 @@ const SingleGenerator: React.FC = () => {
                             <div className="grid grid-cols-2 gap-5">
                                 <Select 
                                     label={t('resolution_label')}
-                                    options={RESOLUTIONS} 
+                                    options={getAvailableResolutions(config.model)} 
                                     value={config.resolution}
                                     onChange={e => setConfig({ ...config, resolution: e.target.value })}
                                 />
@@ -471,9 +538,9 @@ const SingleGenerator: React.FC = () => {
                                                     ${config.useImageSearch 
                                                         ? 'bg-gradient-to-r from-blue-600 to-cyan-500 text-white border-blue-400/50 shadow-lg shadow-blue-500/20' 
                                                         : 'bg-slate-800/50 text-slate-400 border-slate-700/50 hover:border-slate-600 hover:text-slate-300'}
-                                                    ${config.model !== ModelType.GEMINI_3_1_PRO_IMAGE ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer'}
+                                                    ${config.model !== ModelType.GEMINI_3_1_FLASH_IMAGE ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer'}
                                                 `}
-                                                disabled={config.model !== ModelType.GEMINI_3_1_PRO_IMAGE}
+                                                disabled={config.model !== ModelType.GEMINI_3_1_FLASH_IMAGE}
                                                 title={t('image_search_tooltip')}
                                             >
                                                 <i className={`fas fa-search-plus ${config.useImageSearch ? 'text-white' : 'text-slate-500'}`}></i>

@@ -1,6 +1,7 @@
 
 import React, { useState, useEffect } from 'react';
 import Layout from './components/Layout';
+import ErrorBoundary from './components/ErrorBoundary';
 import SingleGenerator from './views/SingleGenerator';
 import BatchProcessor from './views/BatchProcessor';
 import CloudBatchProcessor from './views/CloudBatchProcessor';
@@ -18,47 +19,51 @@ const App: React.FC = () => {
 
     if (!user) {
         return (
-            <LanguageProvider>
-                <ThemeProvider>
-                    <LoginView />
-                </ThemeProvider>
-            </LanguageProvider>
+            <ErrorBoundary>
+                <LanguageProvider>
+                    <ThemeProvider>
+                        <LoginView />
+                    </ThemeProvider>
+                </LanguageProvider>
+            </ErrorBoundary>
         );
     }
 
     return (
-        <LanguageProvider>
-            <ThemeProvider>
-                <Layout activeTab={activeTab} onTabChange={setActiveTab}>
-                    
-                    {/* 
-                       Используем CSS (display: none / block) для генераторов.
-                       Это предотвращает размонтирование компонентов и потерю данных (картинок/настроек)
-                       при переключении вкладок.
-                    */}
-                    
-                    <div className={activeTab === 'single' ? 'block animate-fade-in' : 'hidden'}>
-                        <SingleGenerator />
-                    </div>
+        <ErrorBoundary>
+            <LanguageProvider>
+                <ThemeProvider>
+                    <Layout activeTab={activeTab} onTabChange={setActiveTab}>
+                        
+                        {/* 
+                           Используем CSS (display: none / block) для генераторов.
+                           Это предотвращает размонтирование компонентов и потерю данных (картинок/настроек)
+                           при переключении вкладок.
+                        */}
+                        
+                        <div className={activeTab === 'single' ? 'block animate-fade-in' : 'hidden'}>
+                            <SingleGenerator />
+                        </div>
 
-                    <div className={activeTab === 'batch' ? 'block animate-fade-in' : 'hidden'}>
-                        <BatchProcessor />
-                    </div>
+                        <div className={activeTab === 'batch' ? 'block animate-fade-in' : 'hidden'}>
+                            <BatchProcessor />
+                        </div>
 
-                    <div className={activeTab === 'cloud-batch' ? 'block animate-fade-in' : 'hidden'}>
-                        <CloudBatchProcessor />
-                    </div>
+                        <div className={activeTab === 'cloud-batch' ? 'block animate-fade-in' : 'hidden'}>
+                            <CloudBatchProcessor />
+                        </div>
 
-                    {/* 
-                       Галерею и Админку рендерим условно, чтобы при каждом входе 
-                       данные обновлялись (запрашивалась свежая история с сервера).
-                    */}
-                    {activeTab === 'admin' && user.role === 'admin' && <AdminPanel />}
-                    {activeTab === 'gallery' && <GalleryView />}
+                        {/* 
+                           Галерею и Админку рендерим условно, чтобы при каждом входе 
+                           данные обновлялись (запрашивалась свежая история с сервера).
+                        */}
+                        {activeTab === 'admin' && user.role === 'admin' && <AdminPanel />}
+                        {activeTab === 'gallery' && <GalleryView />}
 
-                </Layout>
-            </ThemeProvider>
-        </LanguageProvider>
+                    </Layout>
+                </ThemeProvider>
+            </LanguageProvider>
+        </ErrorBoundary>
     );
 };
 

@@ -6,7 +6,7 @@ export enum ApiProvider {
 export enum ModelType {
     GEMINI_3_PRO = 'gemini-3-pro-preview',
     GEMINI_3_PRO_IMAGE = 'gemini-3-pro-image-preview',
-    GEMINI_3_1_PRO_IMAGE = 'gemini-3.1-flash-image-preview',
+    GEMINI_3_1_FLASH_IMAGE = 'gemini-3.1-flash-image-preview',
     GEMINI_3_FLASH = 'gemini-3-flash-preview',
     GEMINI_2_5_FLASH_IMAGE = 'gemini-2.5-flash-image'
 }
@@ -80,13 +80,21 @@ export interface BatchTextGroup {
 export interface CloudBatchJob {
     id: string; // The resource name (e.g. "corpora/.../batches/...")
     displayId: string; // Short ID for UI
-    status: string; // "STATE_UNSPECIFIED" | "PENDING" | "RUNNING" | "SUCCEEDED" | "FAILED" | "CANCELLED"
+    status: string; // "STATE_UNSPECIFIED" | "PENDING" | "RUNNING" | "SUCCEEDED" | "FAILED" | "CANCELLED" | "EXPIRED"
     createdAt: string; // Display string
     timestamp?: number; // Raw timestamp for aging logic
     updatedAt?: number; // Last local update timestamp (for merge/versioning)
     model: string;
     outputFileUri?: string;
     error?: string;
+    batchStats?: {
+        totalRequestCount?: number;
+        succeededRequestCount?: number;
+        failedRequestCount?: number;
+    };
+    // Prompt tracking: store prompts used in this batch job
+    prompts?: string[];
+    systemPrompt?: string;
 }
 
 export interface HistoryItem {
@@ -146,6 +154,16 @@ export interface ChatSession {
     messages: ChatMessage[];
     model: ModelType;
     lastUpdated: number;
+}
+
+export interface ServerApiKey {
+    id: string;
+    provider: ApiProvider;
+    label: string;
+    maskedKey: string; // e.g. "****SyAB" - only shown in lists
+    enabled: boolean;
+    allowedUsers: string[]; // ['all'] or ['user1', 'user2']
+    createdAt: string;
 }
 
 export type TabId = 'single' | 'batch' | 'cloud-batch' | 'gallery' | 'admin';

@@ -1,5 +1,5 @@
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { Select, TextArea } from '../components/ui/InputComponents';
 import Button from '../components/ui/Button';
 import FileUploader from '../components/ui/FileUploader';
@@ -8,7 +8,7 @@ import CompareViewer from '../components/ui/CompareViewer';
 import NumberStepper from '../components/ui/NumberStepper';
 import { generateContent, downloadBase64Image, fileToText } from '../services/geminiService';
 import { ProcessingConfig, ModelType, BatchFile, BatchTextGroup } from '../types';
-import { MODELS, RESOLUTIONS, ASPECT_RATIOS, MODEL_PRICING } from '../constants';
+import { MODELS, RESOLUTIONS, ASPECT_RATIOS, MODEL_PRICING, getAvailableResolutions } from '../constants';
 import { useLanguage } from '../contexts/LanguageContext';
 import { usePresets } from '../hooks/usePresets';
 import { saveGeneration } from '../services/historyService';
@@ -27,20 +27,6 @@ const BatchProcessor: React.FC = () => {
         }, template);
     };
     
-    const translatedAspectRatios = [
-        { value: 'Auto', label: t('ar_auto') },
-        { value: '1:1', label: t('ar_square') },
-        { value: '9:16', label: t('ar_portrait_mobile') },
-        { value: '16:9', label: t('ar_landscape') },
-        { value: '3:4', label: t('ar_portrait_standard') },
-        { value: '4:3', label: t('ar_landscape_standard') },
-        { value: '3:2', label: t('ar_classic_photo') },
-        { value: '2:3', label: t('ar_portrait_photo') },
-        { value: '5:4', label: t('ar_print') },
-        { value: '4:5', label: t('ar_instagram') },
-        { value: '21:9', label: t('ar_cinematic') },
-    ];
-
     const { presets } = usePresets();
     const user = getCurrentUser();
     
@@ -54,6 +40,28 @@ const BatchProcessor: React.FC = () => {
         aspectRatio: 'Auto',
         resolution: '4K'
     });
+
+    const translatedAspectRatios = useMemo(() => [
+        { value: 'Auto', label: t('ar_auto') },
+        { value: '1:1', label: t('ar_square') },
+        { value: '9:16', label: t('ar_portrait_mobile') },
+        { value: '16:9', label: t('ar_landscape') },
+        { value: '3:4', label: t('ar_portrait_standard') },
+        { value: '4:3', label: t('ar_landscape_standard') },
+        { value: '3:2', label: t('ar_classic_photo') },
+        { value: '2:3', label: t('ar_portrait_photo') },
+        { value: '5:4', label: t('ar_print') },
+        { value: '4:5', label: t('ar_instagram') },
+        { value: '21:9', label: t('ar_cinematic') },
+        { value: '1:4', label: t('ar_tall_vertical') },
+        { value: '4:1', label: t('ar_wide_horizontal') },
+        { value: '1:8', label: t('ar_ultra_tall') },
+        { value: '8:1', label: t('ar_ultra_wide') },
+    ].filter(ar => {
+        const flashOnly = ['1:4', '4:1', '1:8', '8:1'];
+        if (flashOnly.includes(ar.value)) return config.model === ModelType.GEMINI_3_1_FLASH_IMAGE;
+        return true;
+    }), [config.model, t]);
 
     // Image Batch State
     const [files, setFiles] = useState<BatchFile[]>([]);
@@ -593,7 +601,7 @@ const BatchProcessor: React.FC = () => {
                                 <>
                                     <Select 
                                         label={t('resolution_label')}
-                                        options={RESOLUTIONS} 
+                                        options={getAvailableResolutions(config.model)} 
                                         value={config.resolution}
                                         onChange={e => setConfig({ ...config, resolution: e.target.value })}
                                     />
@@ -631,9 +639,9 @@ const BatchProcessor: React.FC = () => {
                                                     ${config.useImageSearch 
                                                         ? 'bg-gradient-to-r from-blue-600 to-cyan-500 text-white border-blue-400/50 shadow-lg shadow-blue-500/20' 
                                                         : 'bg-slate-800/50 text-slate-400 border-slate-700/50 hover:border-slate-600 hover:text-slate-300'}
-                                                    ${config.model !== ModelType.GEMINI_3_1_PRO_IMAGE ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer'}
+                                                    ${config.model !== ModelType.GEMINI_3_1_FLASH_IMAGE ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer'}
                                                 `}
-                                                disabled={config.model !== ModelType.GEMINI_3_1_PRO_IMAGE}
+                                                disabled={config.model !== ModelType.GEMINI_3_1_FLASH_IMAGE}
                                                 title={t('image_search_tooltip')}
                                             >
                                                 <i className={`fas fa-search-plus ${config.useImageSearch ? 'text-white' : 'text-slate-500'}`}></i>
